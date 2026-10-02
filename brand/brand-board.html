@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AutoScale Labs — Brand Board</title>
+<link rel="icon" href="delta-favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@1,500&family=Inter:wght@400;500&family=JetBrains+Mono:wght@500&family=Space+Grotesk:wght@700&display=swap" rel="stylesheet">
+<style>
+:root{--obsidian:#111112;--panel:#1A1A1B;--alabaster:#F8F4F0;--cyan:#38F3FF;--clay:#8B735B;--muted:#A9A39C}
+*{box-sizing:border-box;margin:0}
+body{background:var(--obsidian);color:var(--alabaster);font:400 16px/1.6 Inter,system-ui,sans-serif;position:relative}
+/* physical grain, no gradients/orbs */
+body::before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.07;z-index:10;
+ background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>")}
+.wrap{max-width:1120px;margin:0 auto;padding:0 16px}
+section{border-top:1px solid var(--clay);padding:72px 0;position:relative}
+.coord{font:500 12px/1 "JetBrains Mono",monospace;color:var(--clay);letter-spacing:.08em;margin-bottom:28px}
+.coord b{color:var(--cyan);font-weight:500}
+h1,h2,h3{font-family:"Space Grotesk",sans-serif;font-weight:700;letter-spacing:-.02em;line-height:1.05}
+h1{font-size:clamp(40px,7vw,84px)}
+h2{font-size:clamp(28px,4vw,44px);margin-bottom:12px}
+p.lead{color:var(--muted);max-width:60ch}
+.quote{font:italic 500 clamp(22px,3vw,34px)/1.35 "Cormorant Garamond",serif;max-width:30ch}
+.hero{display:grid;grid-template-columns:1.2fr 1fr;gap:48px;align-items:center;padding:96px 0}
+.hero img{width:100%;max-width:360px;justify-self:center}
+.cta{display:inline-block;margin-top:28px;padding:14px 22px;background:var(--cyan);color:var(--obsidian);font:500 14px "JetBrains Mono",monospace;text-decoration:none;border:1px solid var(--cyan)}
+.cta:hover{background:transparent;color:var(--cyan)}
+.cta:focus-visible{outline:2px solid var(--alabaster);outline-offset:3px}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-top:32px}
+.card{background:var(--panel);border:1px solid var(--clay);padding:20px}
+.sw{height:96px;margin-bottom:14px;border:1px solid rgba(248,244,240,.15)}
+.mono{font-family:"JetBrains Mono",monospace;font-size:13px}
+.k{color:var(--muted);font-size:13px}
+.bar{display:flex;height:28px;margin-top:24px;border:1px solid var(--clay)}
+.logos .card{display:flex;flex-direction:column;gap:16px;align-items:flex-start}
+.logos img{height:120px}
+.light{background:var(--alabaster);color:var(--obsidian)}
+.nav{display:flex;align-items:center;gap:12px;padding:14px 20px;border:1px solid var(--clay);background:var(--panel);margin-top:24px}
+.nav span{font:700 18px "Space Grotesk";letter-spacing:-.01em}
+.nav .links{margin-left:auto;display:flex;gap:20px;color:var(--muted);font-size:14px}
+.telemetry{background:var(--panel);border:1px solid var(--clay);padding:20px;margin-top:24px;color:var(--cyan)}
+.telemetry .dim{color:var(--clay)}
+table{width:100%;border-collapse:collapse;margin-top:24px;font-size:14px}
+td,th{padding:10px 12px;border-bottom:1px solid rgba(139,115,91,.5);text-align:left;vertical-align:top}
+th{font:500 12px "JetBrains Mono";color:var(--clay);letter-spacing:.08em}
+.no li{color:var(--muted);margin:6px 0 6px 18px}
+@media (max-width:720px){.hero{grid-template-columns:1fr;padding:56px 0}.nav .links{display:none}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="hero">
+  <div>
+    <div class="coord">+ [0xFA] &nbsp; AUTOSCALE LABS &nbsp; <b>● LIVE</b></div>
+    <h1>Agents that run your operations. Not demos.</h1>
+    <p class="lead" style="margin-top:20px">An Autonomous Capability Layer, deployed in 4–8 weeks, validated end-to-end, with zero data retention.</p>
+    <a class="cta" href="#">BOOK A SCOPING CALL →</a>
+  </div>
+  <img src="sovereign-core.svg" alt="Sovereign Core: concentric rings with an active cyan node">
+</div>
+
+<section>
+  <div class="coord">+ 01 &nbsp; COLOR · 60 / 30 / 10</div>
+  <h2>Obsidian, alabaster, one signal.</h2>
+  <p class="lead">Cyan is reserved for things that are live: telemetry, active agents, the primary action. If it isn't alive, it isn't cyan.</p>
+  <div class="bar" role="img" aria-label="60 percent obsidian, 30 percent alabaster, 10 percent cyan">
+    <div style="flex:60;background:#111112"></div><div style="flex:30;background:#F8F4F0"></div><div style="flex:10;background:#38F3FF"></div>
+  </div>
+  <div class="grid">
+    <div class="card"><div class="sw" style="background:#111112"></div><b>Obsidian Midnight</b><div class="mono">#111112 · panels #1A1A1B</div><div class="k">Dominant base, 60%</div></div>
+    <div class="card"><div class="sw" style="background:#F8F4F0"></div><b>Warm Alabaster</b><div class="mono">#F8F4F0</div><div class="k">Type + tactile warmth, 30%</div></div>
+    <div class="card"><div class="sw" style="background:#38F3FF"></div><b>Electric Cyan</b><div class="mono">#38F3FF</div><div class="k">Live signal only, 10%</div></div>
+    <div class="card"><div class="sw" style="background:#8B735B"></div><b>Weathered Clay</b><div class="mono">#8B735B</div><div class="k">Hairlines + coordinates. Not for small body text (4.2:1 on obsidian).</div></div>
+  </div>
+</section>
+
+<section>
+  <div class="coord">+ 02 &nbsp; TYPE</div>
+  <h2>Four voices, strict jobs.</h2>
+  <div class="grid">
+    <div class="card"><div class="k mono">SPACE GROTESK 700 · HEADLINES</div><h3 style="font-size:34px;margin-top:10px">Deploy in weeks.</h3></div>
+    <div class="card"><div class="k mono">INTER 400/500 · BODY</div><p style="margin-top:10px">We build agents that are validated, observable and yours to keep. Plain language, no hype.</p></div>
+    <div class="card"><div class="k mono">CORMORANT GARAMOND ITALIC · EDITORIAL</div><p class="quote" style="margin-top:10px">“We would rather ship one agent that works than ten that demo.”</p></div>
+    <div class="card"><div class="k mono">JETBRAINS MONO 500 · DATA</div><p class="mono" style="margin-top:10px;color:var(--cyan)">uptime 99.9% · retention 0d</p></div>
+  </div>
+</section>
+
+<section class="logos">
+  <div class="coord">+ 03 &nbsp; ADAPTIVE LOGO · MORPH-MARK</div>
+  <h2>One mark, three resolutions.</h2>
+  <p class="lead">The mark simplifies as the canvas shrinks. Never show the Sovereign Core below 96px.</p>
+  <div class="grid">
+    <div class="card"><img src="sovereign-core.svg" alt="Sovereign Core"><b>Sovereign Core</b><div class="k">Hero / desktop ≥ 96px</div></div>
+    <div class="card"><img src="neural-monolith.svg" alt="Neural Monolith"><b>Neural Monolith</b><div class="k">Header / nav, 24–64px</div></div>
+    <div class="card"><img src="delta-favicon.svg" alt="High-Contrast Delta"><b>High-Contrast Delta</b><div class="k">Favicon / mobile, 16–32px</div></div>
+  </div>
+  <div class="nav"><img src="neural-monolith.svg" alt="" height="28"><span>AutoScale Labs</span><div class="links"><span style="font:400 14px Inter">Capabilities</span><span style="font:400 14px Inter">Method</span><span style="font:400 14px Inter">Proof</span></div></div>
+</section>
+
+<section>
+  <div class="coord">+ 04 &nbsp; DATA VOICE</div>
+  <h2>Telemetry is the decoration.</h2>
+  <div class="telemetry mono">
+<pre style="font:inherit;white-space:pre-wrap">[0xFA] acl.agent.invoice-recon   <span class="dim">status</span> ● ACTIVE
+[0xFB] pydantic.validate         <span class="dim">pass</span>   1,204 / 1,204
+[0xFC] mcp.bridge.erp            <span class="dim">latency</span> 118ms
+[0xFD] data.retention            <span class="dim">days</span>   0</pre>
+  </div>
+  <p class="k" style="margin-top:12px">Sample data for design only. Replace with real figures before publishing.</p>
+</section>
+
+<section>
+  <div class="coord">+ 05 &nbsp; ANTI-SLOP RULES</div>
+  <h2>What we never do.</h2>
+  <ul class="no">
+    <li>No purple/blue glow orbs or gradient mesh backgrounds.</li>
+    <li>No stock 3D robot hands, brains, or floating holograms.</li>
+    <li>No “revolutionize / unleash / supercharge” copy.</li>
+    <li>Only Cartesian grids, <span class="mono">+</span> markers, <span class="mono">[0xFA]</span> coordinates, hairlines, and fine grain.</li>
+  </ul>
+</section>
+
+</div>
+</body>
+</html>

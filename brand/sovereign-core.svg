@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-label="AutoScale Labs Sovereign Core">
+  <style>
+    :root{--ink:#F8F4F0;--clay:#8B735B;--pulse:#38F3FF}
+    .ring{fill:none;stroke:var(--clay);stroke-width:1}
+    .n{fill:var(--ink)}
+    .edge{stroke:var(--clay);stroke-width:.75;opacity:.7}
+  </style>
+  <circle class="ring" cx="120" cy="120" r="108"/>
+  <circle class="ring" cx="120" cy="120" r="76" stroke-dasharray="2 5"/>
+  <circle class="ring" cx="120" cy="120" r="44"/>
+  <path class="edge" d="M120 12V44M120 196v32M12 120h32M196 120h32M43.6 43.6l22.6 22.6M173.8 173.8l22.6 22.6M196.4 43.6l-22.6 22.6M66.2 173.8l-22.6 22.6" opacity=".35"/>
+  <g class="n">
+    <circle cx="120" cy="12" r="3.5"/><circle cx="228" cy="120" r="3.5"/>
+    <circle cx="120" cy="228" r="3.5"/><circle cx="12" cy="120" r="3.5"/>
+    <circle cx="173.7" cy="66.3" r="3"/><circle cx="66.3" cy="173.7" r="3"/>
+    <circle cx="173.7" cy="173.7" r="3"/><circle cx="66.3" cy="66.3" r="3"/>
+  </g>
+  <circle cx="120" cy="120" r="14" fill="var(--pulse)" opacity=".25">
+    <animate attributeName="r" values="14;30;14" dur="3.2s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values=".35;0;.35" dur="3.2s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="120" cy="120" r="8" fill="var(--pulse)"/>
+</svg>

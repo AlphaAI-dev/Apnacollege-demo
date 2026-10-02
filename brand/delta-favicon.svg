@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="AutoScale Labs favicon">
+  <rect width="32" height="32" rx="6" fill="#111112"/>
+  <path d="M20 6H11v20h9" fill="none" stroke="#F8F4F0" stroke-width="2.5" stroke-linecap="square"/>
+  <path d="M13.5 21l3-7 3 7" fill="none" stroke="#F8F4F0" stroke-width="1.5" stroke-linecap="square"/>
+  <circle cx="25" cy="16" r="2.5" fill="#38F3FF"/>
+</svg>
