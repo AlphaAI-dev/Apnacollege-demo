@@ -48,41 +48,32 @@ VAL = "val = -ts_rank(enterprise_value / ts_backfill({cf}, 60), {win});\n"
 STAB = "stab = -ts_std_dev(ts_backfill(scl12_buzz, 5), 5);\n"
 
 
-def volval(w=0.5, rv="parkinson_volatility_120", cf="cashflow_op", win=126):
+def volval(w=0.5, rv="parkinson_volatility_120", cf="cashflow_op", win=126, smooth=5, grp="industry"):
     """Round 1's best alpha (volval_tsrank: fitness 1.78, self-corr 0.66) with knobs."""
     return (VR.format(rv=rv) + VAL.format(cf=cf, win=win)
-            + f"{w} * group_rank(ts_mean(vr, 5), industry) + {round(1 - w, 2)} * group_rank(val, industry) - 0.5")
+            + f"{w} * group_rank(ts_mean(vr, {smooth}), {grp}) + {round(1 - w, 2)} * group_rank(val, {grp}) - 0.5")
 
 
-# Round 1 settings for volval_tsrank, which every variant below changes one thing from.
-VT = dict(neutralization="SECTOR", decay=4, truncation=0.05)
+# Round 2 winners: Industry neutralization (fitness 1.98), 252-day window (1.85, turnover
+# under 12.5%), 40% vol weight (Sharpe 1.80). Round 3 combines them.
+VT = dict(neutralization="INDUSTRY", decay=4, truncation=0.05)
 
 CANDIDATES = [
-    # Change one setting at a time.
-    dict(name="vt_trunc08", code=volval(), **{**VT, "truncation": 0.08}),
-    dict(name="vt_decay3", code=volval(), **{**VT, "decay": 3}),
-    dict(name="vt_decay6", code=volval(), **{**VT, "decay": 6}),
-    dict(name="vt_industry", code=volval(), **{**VT, "neutralization": "INDUSTRY"}),
-    dict(name="vt_top1000", code=volval(), universe="TOP1000", **VT),
-    # Change one part of the expression at a time.
-    dict(name="vt_w60_vol", code=volval(w=0.6), **VT),
-    dict(name="vt_w40_vol", code=volval(w=0.4), **VT),
-    dict(name="vt_win252", code=volval(win=252), **VT),
-    dict(name="vt_rv60", code=volval(rv="parkinson_volatility_60"), **VT),
-    dict(name="vt_cashflow", code=volval(cf="cashflow"), **VT),
-    dict(name="vt_plus_stab",
-         code=VR.format(rv="parkinson_volatility_120") + VAL.format(cf="cashflow_op", win=126) + STAB
-         + "0.4 * group_rank(ts_mean(vr, 5), industry) + 0.4 * group_rank(val, industry)"
-           " + 0.2 * group_rank(stab, industry) - 0.5", **VT),
-    # Each leg alone, to see which one carries the Sharpe.
-    dict(name="leg_vr", code=VR.format(rv="parkinson_volatility_120")
-         + "group_rank(ts_mean(vr, 5), industry) - 0.5", **VT),
-    dict(name="leg_val", code=VAL.format(cf="cashflow_op", win=126)
-         + "group_rank(val, industry) - 0.5", **VT),
-    # New family for future days: profitability, accruals and margin trend.
+    dict(name="r3_ind_win252", code=volval(win=252), **VT),
+    dict(name="r3_ind_w40", code=volval(w=0.4), **VT),
+    dict(name="r3_ind_win252_w40", code=volval(win=252, w=0.4), **VT),
+    dict(name="r3_ind_win252_w40_dec3", code=volval(win=252, w=0.4), **{**VT, "decay": 3}),
+    dict(name="r3_ind_win252_w40_dec5", code=volval(win=252, w=0.4), **{**VT, "decay": 5}),
+    dict(name="r3_ind_win504", code=volval(win=504), **VT),
+    dict(name="r3_ind_win252_smooth10", code=volval(win=252, smooth=10), **VT),
+    dict(name="r3_ind_win252_subgrp", code=volval(win=252, grp="subindustry"), **VT),
+    dict(name="r3_subind_win252", code=volval(win=252), **{**VT, "neutralization": "SUBINDUSTRY"}),
+    dict(name="r3_ind_win252_top200", code=volval(win=252), universe="TOP200", **VT),
+    dict(name="r3_ind_win252_w40_top1000", code=volval(win=252, w=0.4), universe="TOP1000", **VT),
+    # New family for future days ("net_income" is not a field; accruals now use operating_income).
     dict(name="qualityc",
          code="""gp  = ts_backfill((revenue - cogs) / assets, 60);
-acc = -ts_backfill((net_income - cashflow_op) / assets, 60);
+acc = -ts_backfill((operating_income - cashflow_op) / assets, 60);
 imp = ts_delta(ts_backfill(operating_income / assets, 60), 252);
 0.4 * group_rank(gp, industry) + 0.3 * group_rank(acc, industry) + 0.3 * group_rank(imp, industry) - 0.5""",
          decay=2),
