@@ -41,55 +41,51 @@ DEFAULTS = dict(
 
 # Variable names are chosen to avoid data-field names (e.g. "eps" is a field,
 # so it is a reserved word in Fast Expression).
-QUALITY = """oey  = ts_rank(ts_backfill(operating_income, 60) / cap, 252);
-lev  = ts_backfill(liabilities, 60) / ts_backfill(assets, 60);
-stab = -ts_std_dev(ts_backfill(scl12_buzz, 5), 5);
-s = 0.5 * group_rank(oey, industry) + 0.3 * group_rank(lev, industry) + 0.2 * group_rank(stab, industry);
-"""
 
-VOLVAL = """vr  = ts_backfill({iv} / parkinson_volatility_120, 5);
-val = -{op}(enterprise_value / ts_backfill(cashflow_op, 60), {win});
-s1 = group_rank(ts_mean(vr, 5), industry);
-s2 = group_rank(val, industry);
-s1 + s2 - 1"""
+# BRAIN rejects unused variables, so each template only defines what its last line uses.
+VR = "vr  = ts_backfill(implied_volatility_call_120 / {rv}, 5);\n"
+VAL = "val = -ts_rank(enterprise_value / ts_backfill({cf}, 60), {win});\n"
+STAB = "stab = -ts_std_dev(ts_backfill(scl12_buzz, 5), 5);\n"
+
+
+def volval(w=0.5, rv="parkinson_volatility_120", cf="cashflow_op", win=126):
+    """Round 1's best alpha (volval_tsrank: fitness 1.78, self-corr 0.66) with knobs."""
+    return (VR.format(rv=rv) + VAL.format(cf=cf, win=win)
+            + f"{w} * group_rank(ts_mean(vr, 5), industry) + {round(1 - w, 2)} * group_rank(val, industry) - 0.5")
+
+
+# Round 1 settings for volval_tsrank, which every variant below changes one thing from.
+VT = dict(neutralization="SECTOR", decay=4, truncation=0.05)
 
 CANDIDATES = [
-    # Alpha 88vR6aY7 (Good, fitness 1.67) and the variants meant to lift it.
-    dict(name="quality_base_top1000", code=QUALITY + "s - 0.5", universe="TOP1000"),
-    dict(name="quality_top500", code=QUALITY + "s - 0.5"),
-    dict(name="quality_top500_pow2", code=QUALITY + "signed_power(s - 0.5, 2)"),
-    dict(name="quality_top500_decay4", code=QUALITY + "s - 0.5", decay=4),
-    dict(name="quality_top500_subind", code=QUALITY + "s - 0.5", neutralization="SUBINDUSTRY"),
-    dict(name="quality_top200", code=QUALITY + "s - 0.5", universe="TOP200"),
-    # One leg at a time, to find which leg loses money in 2023.
-    dict(name="leg_oey", code=QUALITY + "group_rank(oey, industry) - 0.5", universe="TOP1000"),
-    dict(name="leg_lev", code=QUALITY + "group_rank(lev, industry) - 0.5", universe="TOP1000"),
-    dict(name="leg_stab", code=QUALITY + "group_rank(stab, industry) - 0.5", universe="TOP1000"),
-    # Vol-ratio + valuation (was Good at 1.68, self-correlation 0.7155).
-    dict(name="volval_smooth",
-         code=VOLVAL.format(iv="implied_volatility_call_120", op="ts_zscore", win=63),
-         neutralization="SECTOR", decay=4),
-    dict(name="volval_meaniv",
-         code=VOLVAL.format(iv="implied_volatility_mean_120", op="ts_zscore", win=63),
-         neutralization="SECTOR", decay=4),
-    dict(name="volval_tsrank",
-         code=VOLVAL.format(iv="implied_volatility_call_120", op="ts_rank", win=126),
-         neutralization="SECTOR", decay=4),
-    # IV term structure + change in short-dated IV.
-    dict(name="ivterm",
-         code="""ivshort = ts_backfill(implied_volatility_mean_30, 5);
-ivlong  = ts_backfill(implied_volatility_mean_360, 5);
-ivslope = ts_mean(ivlong / ivshort, 5);
-ivchg   = -ts_delta(ivshort, 10) / ivlong;
-0.6 * group_rank(ivslope, sector) + 0.4 * group_rank(ivchg, sector) - 0.5""",
-         neutralization="SECTOR", decay=5, truncation=0.08),
-    # Analyst EPS revisions + analyst FCF yield ("eps" renamed to avoid the reserved word).
-    dict(name="revision",
-         code="""estps  = ts_backfill(est_eps, 20);
-estfcf = ts_backfill(est_fcf, 20);
-revis  = ts_mean(ts_delta(estps, 20) / close, 5);
-fcfyld = estfcf / cap;
-0.6 * group_rank(revis, industry) + 0.4 * group_rank(fcfyld, industry) - 0.5"""),
+    # Change one setting at a time.
+    dict(name="vt_trunc08", code=volval(), **{**VT, "truncation": 0.08}),
+    dict(name="vt_decay3", code=volval(), **{**VT, "decay": 3}),
+    dict(name="vt_decay6", code=volval(), **{**VT, "decay": 6}),
+    dict(name="vt_industry", code=volval(), **{**VT, "neutralization": "INDUSTRY"}),
+    dict(name="vt_top1000", code=volval(), universe="TOP1000", **VT),
+    # Change one part of the expression at a time.
+    dict(name="vt_w60_vol", code=volval(w=0.6), **VT),
+    dict(name="vt_w40_vol", code=volval(w=0.4), **VT),
+    dict(name="vt_win252", code=volval(win=252), **VT),
+    dict(name="vt_rv60", code=volval(rv="parkinson_volatility_60"), **VT),
+    dict(name="vt_cashflow", code=volval(cf="cashflow"), **VT),
+    dict(name="vt_plus_stab",
+         code=VR.format(rv="parkinson_volatility_120") + VAL.format(cf="cashflow_op", win=126) + STAB
+         + "0.4 * group_rank(ts_mean(vr, 5), industry) + 0.4 * group_rank(val, industry)"
+           " + 0.2 * group_rank(stab, industry) - 0.5", **VT),
+    # Each leg alone, to see which one carries the Sharpe.
+    dict(name="leg_vr", code=VR.format(rv="parkinson_volatility_120")
+         + "group_rank(ts_mean(vr, 5), industry) - 0.5", **VT),
+    dict(name="leg_val", code=VAL.format(cf="cashflow_op", win=126)
+         + "group_rank(val, industry) - 0.5", **VT),
+    # New family for future days: profitability, accruals and margin trend.
+    dict(name="qualityc",
+         code="""gp  = ts_backfill((revenue - cogs) / assets, 60);
+acc = -ts_backfill((net_income - cashflow_op) / assets, 60);
+imp = ts_delta(ts_backfill(operating_income / assets, 60), 252);
+0.4 * group_rank(gp, industry) + 0.3 * group_rank(acc, industry) + 0.3 * group_rank(imp, industry) - 0.5""",
+         decay=2),
 ]
 
 
