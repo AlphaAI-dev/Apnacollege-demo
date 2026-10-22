@@ -54,24 +54,44 @@ def volval(w=0.5, rv="parkinson_volatility_120", cf="cashflow_op", win=126, smoo
             + f"{w} * group_rank(ts_mean(vr, {smooth}), {grp}) + {round(1 - w, 2)} * group_rank(val, {grp}) - 0.5")
 
 
-# Round 2 winners: Industry neutralization (fitness 1.98), 252-day window (1.85, turnover
-# under 12.5%), 40% vol weight (Sharpe 1.80). Round 3 combines them.
-VT = dict(neutralization="INDUSTRY", decay=4, truncation=0.05)
+# The vol/valuation family is now submitted, so its variants fail self-correlation.
+# Round 4 tries families built from datasets none of the submitted alphas use.
+# Fields come from the official BRAIN example alphas, so they should all exist.
+OVP = "ovp = -ts_corr(ts_backfill(est_ptp, 20), ts_backfill(est_fcf, 20), {win});\n"
+LIAB = "liab = -ts_rank(ts_backfill(fn_liab_fair_val_l1_a, 60), {win});\n"
+INV = ("inv = ts_regression(ts_sum(ts_backfill(fnd6_newqv1300_ivltq, 60), 252), ts_step(1), 756, rettype=2);\n")
+REVG = "revg = ts_rank(ts_backfill(revenue, 60) / ts_delay(ts_backfill(revenue, 60), 252), 252);\n"
 
 CANDIDATES = [
-    dict(name="r3_ind_win252", code=volval(win=252), **VT),
-    dict(name="r3_ind_w40", code=volval(w=0.4), **VT),
-    dict(name="r3_ind_win252_w40", code=volval(win=252, w=0.4), **VT),
-    dict(name="r3_ind_win252_w40_dec3", code=volval(win=252, w=0.4), **{**VT, "decay": 3}),
-    dict(name="r3_ind_win252_w40_dec5", code=volval(win=252, w=0.4), **{**VT, "decay": 5}),
-    dict(name="r3_ind_win504", code=volval(win=504), **VT),
-    dict(name="r3_ind_win252_smooth10", code=volval(win=252, smooth=10), **VT),
-    dict(name="r3_ind_win252_subgrp", code=volval(win=252, grp="subindustry"), **VT),
-    dict(name="r3_subind_win252", code=volval(win=252), **{**VT, "neutralization": "SUBINDUSTRY"}),
-    dict(name="r3_ind_win252_top200", code=volval(win=252), universe="TOP200", **VT),
-    dict(name="r3_ind_win252_w40_top1000", code=volval(win=252, w=0.4), universe="TOP1000", **VT),
-    # New family for future days ("net_income" is not a field; accruals now use operating_income).
-    dict(name="qualityc",
+    # Analysts' price target vs FCF estimate ("Overpriced stocks", with the shorter-window hint).
+    dict(name="r4_ovp63_market", code=OVP.format(win=63) + "group_rank(ovp, industry) - 0.5",
+         neutralization="MARKET", decay=4),
+    dict(name="r4_ovp63_industry", code=OVP.format(win=63) + "group_rank(ovp, industry) - 0.5", decay=4),
+    dict(name="r4_ovp126_industry", code=OVP.format(win=126) + "group_rank(ovp, industry) - 0.5", decay=4),
+    # Liabilities going up ("Liabilities going up", with the shorter-window hint).
+    dict(name="r4_liab126", code=LIAB.format(win=126) + "group_rank(liab, subindustry) - 0.5",
+         neutralization="SUBINDUSTRY", decay=4),
+    dict(name="r4_liab63", code=LIAB.format(win=63) + "group_rank(liab, subindustry) - 0.5",
+         neutralization="SUBINDUSTRY", decay=4),
+    # Investing for the future, alone and with rising revenue (the doc's hint).
+    dict(name="r4_invest", code=INV + "group_rank(inv, subindustry) - 0.5",
+         neutralization="SUBINDUSTRY", decay=2),
+    dict(name="r4_invest_revg", code=INV + REVG
+         + "0.6 * group_rank(inv, subindustry) + 0.4 * group_rank(revg, subindustry) - 0.5",
+         neutralization="SUBINDUSTRY", decay=2),
+    # Two new families together: different datasets usually lift Sharpe.
+    dict(name="r4_ovp_liab", code=OVP.format(win=63) + LIAB.format(win=126)
+         + "0.5 * group_rank(ovp, industry) + 0.5 * group_rank(liab, industry) - 0.5", decay=4),
+    dict(name="r4_ovp_invest", code=OVP.format(win=63) + INV
+         + "0.5 * group_rank(ovp, industry) + 0.5 * group_rank(inv, industry) - 0.5", decay=4),
+    dict(name="r4_liab_invest", code=LIAB.format(win=126) + INV
+         + "0.5 * group_rank(liab, subindustry) + 0.5 * group_rank(inv, subindustry) - 0.5",
+         neutralization="SUBINDUSTRY", decay=3),
+    dict(name="r4_ovp_liab_invest", code=OVP.format(win=63) + LIAB.format(win=126) + INV
+         + "0.4 * group_rank(ovp, industry) + 0.3 * group_rank(liab, industry)"
+           " + 0.3 * group_rank(inv, industry) - 0.5", decay=4),
+    # Profitability, accruals and margin trend ("net_income" is not a field).
+    dict(name="r4_qualityc",
          code="""gp  = ts_backfill((revenue - cogs) / assets, 60);
 acc = -ts_backfill((operating_income - cashflow_op) / assets, 60);
 imp = ts_delta(ts_backfill(operating_income / assets, 60), 252);
