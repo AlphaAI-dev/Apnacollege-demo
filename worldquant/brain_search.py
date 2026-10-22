@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-Batch-simulate WorldQuant BRAIN alpha candidates through the BRAIN API and
-rank them by fitness. Nothing is submitted unless you run --submit yourself.
+Search for WorldQuant BRAIN alphas through the BRAIN API: simulate every idea,
+tune the best few one setting at a time, then print only the alphas that pass
+every check, with their code and settings ready to paste into BRAIN.
+Nothing is submitted unless you run --submit yourself.
 
 Setup:
     pip install requests
@@ -9,12 +11,14 @@ Setup:
     export BRAIN_PASSWORD="your-password"     # or leave unset to be prompted
 
 Usage:
-    python brain_search.py                    # simulate every candidate
-    python brain_search.py --only quality     # only candidates whose name contains "quality"
-    python brain_search.py --list             # print candidate names and exit
+    python brain_search.py                    # search for Spectacular (fitness 2.5+) alphas
+    python brain_search.py --target 2.0       # accept Excellent too
+    python brain_search.py --only ovp         # only ideas whose name contains "ovp"
+    python brain_search.py --list             # print idea names and exit
     python brain_search.py --submit ALPHA_ID  # submit one alpha after checking it on the website
 
-Results are written to results/brain_<timestamp>.csv, sorted by fitness.
+The pasteable alphas are saved to results/winners_<timestamp>.txt and every
+simulation to results/brain_<timestamp>.csv.
 """
 import argparse
 import csv
@@ -153,7 +157,7 @@ class Brain:
             time.sleep(retry)
 
     def simulate(self, cand):
-        settings = {**DEFAULTS, **{k: v for k, v in cand.items() if k not in ("name", "code")}}
+        settings = settings_of(cand)
         payload = {
             "type": "REGULAR",
             "regular": cand["code"],
@@ -226,12 +230,96 @@ FIELDS = ["name", "rating", "fitness", "sharpe", "turnover", "returns", "drawdow
           "self_corr", "failed_checks", "universe", "neutralization", "decay",
           "truncation", "alpha_id", "link", "error", "code"]
 
+# Settings the search tunes, one at a time, for the most promising families.
+SEARCH_SPACE = [
+    ("neutralization", ["MARKET", "SECTOR", "INDUSTRY", "SUBINDUSTRY"]),
+    ("decay", [2, 4, 6, 8]),
+    ("universe", ["TOP200", "TOP500", "TOP1000"]),
+]
+
+
+def settings_of(cand):
+    return {**DEFAULTS, **{k: v for k, v in cand.items() if k not in ("name", "code", "family")}}
+
+
+def passes(row):
+    """True when no check failed and self-correlation is below 0.7."""
+    if row.get("error") or row.get("fitness") is None or row.get("failed_checks"):
+        return False
+    return row.get("self_corr") is None or row["self_corr"] < 0.7
+
+
+def score(row):
+    if row.get("error") or row.get("fitness") is None:
+        return -99
+    return row["fitness"] if passes(row) else row["fitness"] - 10
+
+
+def run_batch(brain, cands, cache):
+    """Simulate candidates 3 at a time, skipping ones already simulated this run."""
+    keys = [(c["code"], tuple(sorted(settings_of(c).items()))) for c in cands]
+    todo = {k: c for k, c in zip(keys, cands) if k not in cache}
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT) as pool:
+        futures = {pool.submit(brain.simulate, c): k for k, c in todo.items()}
+        for fut in as_completed(futures):
+            try:
+                row = fut.result()
+            except Exception as e:
+                row = dict(name=todo[futures[fut]]["name"], error=f"{type(e).__name__}: {e}")
+            cache[futures[fut]] = row
+            if row.get("error"):
+                print(f"  {row['name']:40} ERROR {row['error'][:80]}")
+            else:
+                print(f"  {row['name']:40} fitness {row['fitness']}  sharpe {row['sharpe']}  "
+                      f"self-corr {row['self_corr']}  {'ok' if passes(row) else 'FAILS'}")
+    return [cache[k] for k in keys]
+
+
+def paste_block(cand, row):
+    s = settings_of(cand)
+    corr = row["self_corr"] if row.get("self_corr") is not None else "check on website"
+    return (f"=== {row['rating'].upper()}  fitness {row['fitness']}  sharpe {row['sharpe']}  "
+            f"turnover {row['turnover']}%  self-corr {corr}\n"
+            f"Settings: Region {s['region']} | Delay {s['delay']} | Universe {s['universe']} | "
+            f"Neutralization {s['neutralization'].title()} | Decay {s['decay']} | "
+            f"Truncation {s['truncation']} | Pasteurization {s['pasteurization'].title()} | "
+            f"Unit Handling Verify | NaN Handling {s['nanHandling'].title()} | Test Period 1 year\n"
+            f"Code:\n{cand['code']}\n"
+            f"Link: {row['link']}\n")
+
+
+def search(brain, cands, target, top):
+    cache = {}
+    print(f"Step 1: simulating {len(cands)} alpha ideas...")
+    rows = run_batch(brain, cands, cache)
+    best = {c["name"]: (c, r) for c, r in zip(cands, rows)}
+
+    # Tune the most promising ideas one setting at a time, keeping whatever scores best.
+    leaders = sorted(best, key=lambda n: score(best[n][1]), reverse=True)[:top]
+    best = {n: best[n] for n in leaders if score(best[n][1]) > -99}
+    for key, values in SEARCH_SPACE:
+        trials = []
+        for fam, (cand, _) in best.items():
+            for v in values:
+                if v != settings_of(cand)[key]:
+                    trials.append((fam, {**cand, key: v, "name": f"{fam} {key}={v}"}))
+        print(f"\nStep 2: tuning {key} for {', '.join(best)} ({len(trials)} simulations)...")
+        for (fam, cand), row in zip(trials, run_batch(brain, [c for _, c in trials], cache)):
+            if score(row) > score(best[fam][1]):
+                best[fam] = (cand, row)
+
+    all_rows = sorted(cache.values(), key=lambda r: r.get("fitness") or -99, reverse=True)
+    finals = sorted(best.values(), key=lambda cr: score(cr[1]), reverse=True)
+    return all_rows, finals
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--only", help="only simulate candidates whose name contains this text")
-    ap.add_argument("--list", action="store_true", help="list candidate names and exit")
+    ap.add_argument("--only", help="only use alpha ideas whose name contains this text")
+    ap.add_argument("--list", action="store_true", help="list alpha ideas and exit")
     ap.add_argument("--submit", metavar="ALPHA_ID", help="submit one alpha and exit")
+    ap.add_argument("--target", type=float, default=2.5, help="fitness to aim for (default 2.5, Spectacular)")
+    ap.add_argument("--top", type=int, default=4, help="how many ideas to tune after step 1 (default 4)")
     args = ap.parse_args()
 
     if args.list:
@@ -248,38 +336,34 @@ def main():
             brain.submit(args.submit)
         return
 
-    todo = [c for c in CANDIDATES if not args.only or args.only in c["name"]]
-    print(f"Simulating {len(todo)} candidates, {MAX_CONCURRENT} at a time...")
-    rows = []
-    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT) as pool:
-        futures = {pool.submit(brain.simulate, c): c["name"] for c in todo}
-        for fut in as_completed(futures):
-            try:
-                row = fut.result()
-            except Exception as e:
-                row = dict(name=futures[fut], error=f"{type(e).__name__}: {e}")
-            rows.append(row)
-            if row.get("error"):
-                print(f"  {row['name']:24} ERROR {row['error']}")
-            else:
-                print(f"  {row['name']:24} fitness {row['fitness']}  sharpe {row['sharpe']}  "
-                      f"turnover {row['turnover']}%  self-corr {row['self_corr']}  {row['rating']}")
+    cands = [c for c in CANDIDATES if not args.only or args.only in c["name"]]
+    all_rows, finals = search(brain, cands, args.target, args.top)
 
-    rows.sort(key=lambda r: r.get("fitness") or -99, reverse=True)
     os.makedirs("results", exist_ok=True)
-    out = f"results/brain_{time.strftime('%Y%m%d_%H%M%S')}.csv"
-    with open(out, "w", newline="") as f:
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    with open(f"results/brain_{stamp}.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")
         w.writeheader()
-        w.writerows(rows)
+        w.writerows(all_rows)
 
-    print(f"\nSaved {out}\n\nExcellent or better with no failed checks:")
-    winners = [r for r in rows if (r.get("fitness") or 0) > 2 and not r.get("failed_checks")
-               and (r.get("self_corr") is None or r["self_corr"] < 0.7)]
-    for r in winners:
-        print(f"  {r['name']:24} fitness {r['fitness']}  {r['link']}")
-    if not winners:
-        print("  none yet. Send the CSV back and pick the next round of changes from it.")
+    # One alpha per idea: alphas from the same idea correlate with each other once one is submitted.
+    hits = [(c, r) for c, r in finals if passes(r) and r["fitness"] >= args.target]
+    near = [(c, r) for c, r in finals if passes(r) and 2.0 <= r["fitness"] < args.target]
+    lines = []
+    if hits:
+        lines.append(f"ALPHAS AT FITNESS {args.target}+ THAT PASS EVERY CHECK (one per idea, submit the best one):\n")
+        lines += [paste_block(c, r) for c, r in hits]
+    else:
+        lines.append(f"No alpha reached fitness {args.target} this run.\n")
+    if near:
+        lines.append("Excellent alphas that pass every check (best found below the target):\n")
+        lines += [paste_block(c, r) for c, r in near]
+    if not hits and not near:
+        lines.append("Nothing passed at fitness 2.0+. Paste this output to Claude for the next round of ideas.")
+    text = "\n".join(lines)
+    with open(f"results/winners_{stamp}.txt", "w") as f:
+        f.write(text)
+    print("\n" + "=" * 70 + "\n" + text + f"\nSaved results/winners_{stamp}.txt and results/brain_{stamp}.csv")
 
 
 if __name__ == "__main__":
