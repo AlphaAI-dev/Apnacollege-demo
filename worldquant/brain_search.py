@@ -351,7 +351,9 @@ def main():
     near = [(c, r) for c, r in finals if passes(r) and 2.0 <= r["fitness"] < args.target]
     lines = []
     if hits:
-        lines.append(f"ALPHAS AT FITNESS {args.target}+ THAT PASS EVERY CHECK (one per idea, submit the best one):\n")
+        lines.append(f"ALPHAS AT FITNESS {args.target}+ THAT PASS EVERY CHECK (one per idea):\n"
+                     "Submit the top one. Ideas that share a part (e.g. ovp) correlate with each other,\n"
+                     "so re-run before submitting a second one to re-check its self-correlation.\n")
         lines += [paste_block(c, r) for c, r in hits]
     else:
         lines.append(f"No alpha reached fitness {args.target} this run.\n")
