@@ -58,50 +58,57 @@ def volval(w=0.5, rv="parkinson_volatility_120", cf="cashflow_op", win=126, smoo
             + f"{w} * group_rank(ts_mean(vr, {smooth}), {grp}) + {round(1 - w, 2)} * group_rank(val, {grp}) - 0.5")
 
 
-# The vol/valuation family is now submitted, so its variants fail self-correlation.
-# Round 4 tries families built from datasets none of the submitted alphas use.
-# Fields come from the official BRAIN example alphas, so they should all exist.
-OVP = "ovp = -ts_corr(ts_backfill(est_ptp, 20), ts_backfill(est_fcf, 20), {win});\n"
-LIAB = "liab = -ts_rank(ts_backfill(fn_liab_fair_val_l1_a, 60), {win});\n"
-INV = ("inv = ts_regression(ts_sum(ts_backfill(fnd6_newqv1300_ivltq, 60), 252), ts_step(1), 756, rettype=2);\n")
-REVG = "revg = ts_rank(ts_backfill(revenue, 60) / ts_delay(ts_backfill(revenue, 60), 252), 252);\n"
+# Round 4's new ideas all had Sharpe under 0.75. Round 5 mixes the alphas that
+# already worked (each one submitted). Mixing n weakly related alphas cuts the
+# mix's correlation with each of them to roughly sqrt((1 + (n-1)*rho) / n) while
+# Sharpe adds up, which is how a mix can pass self-correlation and score higher.
+LEGS = {
+    "vr":   "vr   = ts_backfill(implied_volatility_call_120 / parkinson_volatility_120, 5);",
+    "val":  "val  = -ts_rank(enterprise_value / ts_backfill(cashflow_op, 60), 126);",
+    "oey":  "oey  = ts_rank(ts_backfill(operating_income, 60) / cap, 252);",
+    "lev":  "lev  = ts_backfill(liabilities, 60) / ts_backfill(assets, 60);",
+    "stab": "stab = -ts_std_dev(ts_backfill(scl12_buzz, 5), 5);",
+    "skew": "skew = ts_backfill((implied_volatility_call_180 - implied_volatility_put_180)"
+            " / implied_volatility_mean_180, 5);",
+    "fcfq": "fcfq = ts_decay_linear(ts_scale(est_cashflow_op, 252), 22)"
+            " - ts_decay_linear(ts_scale(est_capex, 252), 22);",
+    "ovp":  "ovp  = -ts_corr(ts_backfill(est_ptp, 20), ts_backfill(est_fcf, 20), 63);",
+}
+# Each family is a 0-1 score built the way its submitted alpha was.
+FAMILIES = {
+    "A": [("vr", 0.5, 5), ("val", 0.5, 0)],                    # vol/valuation (fitness 1.98)
+    "B": [("oey", 0.5, 0), ("lev", 0.3, 0), ("stab", 0.2, 0)],  # quality (1.67)
+    "C": [("skew", 0.5, 5), ("fcfq", 0.5, 0)],                  # skew + FCF (Sharpe 1.89)
+    "E": [("ovp", 1.0, 0)],                                     # new, weak but uncorrelated
+}
+
+
+def mix(**weights):
+    """Weighted mix of families, e.g. mix(A=0.3, B=0.3, C=0.4)."""
+    terms = []
+    for fam, fw in weights.items():
+        for leg, lw, smooth in FAMILIES[fam]:
+            x = f"ts_mean({leg}, {smooth})" if smooth else leg
+            terms.append((leg, round(fw * lw, 3), f"group_rank({x}, industry)"))
+    defs = "\n".join(LEGS[leg] for leg, _, _ in terms)
+    body = " + ".join(f"{w} * {gr}" for _, w, gr in terms)
+    return f"{defs}\n{body} - 0.5"
+
 
 CANDIDATES = [
-    # Analysts' price target vs FCF estimate ("Overpriced stocks", with the shorter-window hint).
-    dict(name="r4_ovp63_market", code=OVP.format(win=63) + "group_rank(ovp, industry) - 0.5",
-         neutralization="MARKET", decay=4),
-    dict(name="r4_ovp63_industry", code=OVP.format(win=63) + "group_rank(ovp, industry) - 0.5", decay=4),
-    dict(name="r4_ovp126_industry", code=OVP.format(win=126) + "group_rank(ovp, industry) - 0.5", decay=4),
-    # Liabilities going up ("Liabilities going up", with the shorter-window hint).
-    dict(name="r4_liab126", code=LIAB.format(win=126) + "group_rank(liab, subindustry) - 0.5",
-         neutralization="SUBINDUSTRY", decay=4),
-    dict(name="r4_liab63", code=LIAB.format(win=63) + "group_rank(liab, subindustry) - 0.5",
-         neutralization="SUBINDUSTRY", decay=4),
-    # Investing for the future, alone and with rising revenue (the doc's hint).
-    dict(name="r4_invest", code=INV + "group_rank(inv, subindustry) - 0.5",
-         neutralization="SUBINDUSTRY", decay=2),
-    dict(name="r4_invest_revg", code=INV + REVG
-         + "0.6 * group_rank(inv, subindustry) + 0.4 * group_rank(revg, subindustry) - 0.5",
-         neutralization="SUBINDUSTRY", decay=2),
-    # Two new families together: different datasets usually lift Sharpe.
-    dict(name="r4_ovp_liab", code=OVP.format(win=63) + LIAB.format(win=126)
-         + "0.5 * group_rank(ovp, industry) + 0.5 * group_rank(liab, industry) - 0.5", decay=4),
-    dict(name="r4_ovp_invest", code=OVP.format(win=63) + INV
-         + "0.5 * group_rank(ovp, industry) + 0.5 * group_rank(inv, industry) - 0.5", decay=4),
-    dict(name="r4_liab_invest", code=LIAB.format(win=126) + INV
-         + "0.5 * group_rank(liab, subindustry) + 0.5 * group_rank(inv, subindustry) - 0.5",
-         neutralization="SUBINDUSTRY", decay=3),
-    dict(name="r4_ovp_liab_invest", code=OVP.format(win=63) + LIAB.format(win=126) + INV
-         + "0.4 * group_rank(ovp, industry) + 0.3 * group_rank(liab, industry)"
-           " + 0.3 * group_rank(inv, industry) - 0.5", decay=4),
-    # Profitability, accruals and margin trend ("net_income" is not a field).
-    dict(name="r4_qualityc",
-         code="""gp  = ts_backfill((revenue - cogs) / assets, 60);
-acc = -ts_backfill((operating_income - cashflow_op) / assets, 60);
-imp = ts_delta(ts_backfill(operating_income / assets, 60), 252);
-0.4 * group_rank(gp, industry) + 0.3 * group_rank(acc, industry) + 0.3 * group_rank(imp, industry) - 0.5""",
-         decay=2),
+    dict(name="r5_ABC", code=mix(A=0.34, B=0.33, C=0.33)),
+    dict(name="r5_ABCE", code=mix(A=0.25, B=0.25, C=0.25, E=0.25)),
+    dict(name="r5_ABCE_lowA", code=mix(A=0.2, B=0.25, C=0.25, E=0.3)),
+    dict(name="r5_ABCE_lowB", code=mix(A=0.25, B=0.2, C=0.25, E=0.3)),
+    dict(name="r5_ABCE_lowC", code=mix(A=0.25, B=0.25, C=0.2, E=0.3)),
+    dict(name="r5_ABE", code=mix(A=0.35, B=0.35, E=0.3)),
+    dict(name="r5_ACE", code=mix(A=0.35, C=0.35, E=0.3)),
+    dict(name="r5_BCE", code=mix(B=0.35, C=0.35, E=0.3)),
+    dict(name="r5_ABC_top1000", code=mix(A=0.34, B=0.33, C=0.33), universe="TOP1000"),
+    dict(name="r5_ABCE_top1000", code=mix(A=0.25, B=0.25, C=0.25, E=0.25), universe="TOP1000"),
 ]
+for c in CANDIDATES:
+    c.setdefault("decay", 4)
 
 
 def rating(fitness):
@@ -204,7 +211,22 @@ class Brain:
             self_corr=self.self_correlation(alpha_id),
         )
         row["rating"] = rating(row["fitness"])
+        # Self-correlation above 0.7 still passes when Sharpe beats the correlated alpha
+        # by 10%. Only BRAIN's submission check knows that, so ask it for strong alphas.
+        if (row["self_corr"] or 0) >= 0.7 and (row["fitness"] or 0) >= 2.0:
+            row["corr_check"] = self.corr_check(alpha_id)
         return row
+
+    def corr_check(self, alpha_id):
+        """Result of the SELF_CORRELATION row of the "Check Submission" test, or None."""
+        try:
+            data = self.wait(f"{API}/alphas/{alpha_id}/check").json()
+            for c in data.get("is", {}).get("checks", []):
+                if c.get("name") == "SELF_CORRELATION":
+                    return c.get("result")
+        except Exception:
+            pass
+        return None
 
     def self_correlation(self, alpha_id):
         try:
@@ -243,10 +265,11 @@ def settings_of(cand):
 
 
 def passes(row):
-    """True when no check failed and self-correlation is below 0.7."""
+    """True when no check failed and self-correlation passes (below 0.7, or BRAIN's
+    check says the Sharpe is 10% better than the alpha it correlates with)."""
     if row.get("error") or row.get("fitness") is None or row.get("failed_checks"):
         return False
-    return row.get("self_corr") is None or row["self_corr"] < 0.7
+    return row.get("self_corr") is None or row["self_corr"] < 0.7 or row.get("corr_check") == "PASS"
 
 
 def score(row):
