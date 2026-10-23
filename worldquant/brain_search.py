@@ -131,22 +131,21 @@ def combo(**weights):
     return "\n".join(defs) + "\n" + " + ".join(terms) + " - 0.5"
 
 
-# Round 7 result: adding operating earnings yield (oey) passed and was submitted as
-# KPm5NzrN (Sharpe 1.85, self-correlation 0.93 accepted by the 10% Sharpe rule); adding
-# ovp or skew failed. Round 8 leans further on oey and the quality parts, aiming for a
-# Sharpe high enough to clear the 10% rule against KPm5NzrN too.
-WINNER = dict(vr=0.3, val=0.5, oey=0.2)
+# Round 8 result: more oey weight raised Sharpe (KPm5NzrN oey 0.2 -> wp92bkV1 oey 0.3,
+# Sharpe 2.24, fitness 2.51) but correlation with KPm5NzrN is 0.99 and the Sharpe is not
+# yet 10% above it. Correlation can't fall below 0.7 inside this family, so round 9 keeps
+# pushing Sharpe up: heavier oey, plus leverage, plus a few settings.
 CANDIDATES = [
-    dict(name="r8_oey30", code=combo(vr=0.25, val=0.45, oey=0.3)),
-    dict(name="r8_oey40", code=combo(vr=0.2, val=0.4, oey=0.4)),
-    dict(name="r8_oey_lev", code=combo(vr=0.25, val=0.4, oey=0.2, lev=0.15)),
-    dict(name="r8_oey_lev_stab", code=combo(vr=0.25, val=0.35, oey=0.2, lev=0.12, stab=0.08)),
-    dict(name="r8_oey_fcfq", code=combo(vr=0.25, val=0.4, oey=0.2, fcfq=0.15)),
-    dict(name="r8_oey_skew", code=combo(vr=0.25, val=0.4, oey=0.2, skew=0.15)),
-    dict(name="r8_oey_ovp", code=combo(vr=0.25, val=0.4, oey=0.2, ovp=0.15)),
-    dict(name="r8_winner_dec6", code=combo(**WINNER), decay=6),
-    dict(name="r8_winner_subind", code=combo(**WINNER), neutralization="SUBINDUSTRY"),
-    dict(name="r8_winner_top1000", code=combo(**WINNER), universe="TOP1000"),
+    dict(name="r9_oey40", code=combo(vr=0.2, val=0.4, oey=0.4)),
+    dict(name="r9_oey50", code=combo(vr=0.15, val=0.35, oey=0.5)),
+    dict(name="r9_oey40_lev10", code=combo(vr=0.2, val=0.3, oey=0.4, lev=0.1)),
+    dict(name="r9_oey35_lev15", code=combo(vr=0.2, val=0.3, oey=0.35, lev=0.15)),
+    dict(name="r9_oey40_fcfq10", code=combo(vr=0.2, val=0.3, oey=0.4, fcfq=0.1)),
+    dict(name="r9_oey40_dec6", code=combo(vr=0.2, val=0.4, oey=0.4), decay=6),
+    dict(name="r9_oey40_dec3", code=combo(vr=0.2, val=0.4, oey=0.4), decay=3),
+    dict(name="r9_oey40_subind", code=combo(vr=0.2, val=0.4, oey=0.4), neutralization="SUBINDUSTRY"),
+    dict(name="r9_oey30_dec6", code=combo(vr=0.25, val=0.45, oey=0.3), decay=6),
+    dict(name="r9_oey30_lev10", code=combo(vr=0.2, val=0.4, oey=0.3, lev=0.1)),
 ]
 for c in CANDIDATES:
     c.setdefault("decay", 4)
