@@ -110,19 +110,39 @@ def mix(alt=False, grp="industry", **weights):
     return f"{defs}\n{body} - 0.5"
 
 
-EQUAL = dict(A=0.25, B=0.25, C=0.25, E=0.25)
+# Round 7 starts from alphas 00J606xg / omoPmGLJ: fitness 2.12 / 2.05, Sharpe 1.99 / 1.94,
+# self-correlation 0.97 with the submitted vol/valuation alpha. BRAIN still accepts
+# correlation above 0.7 when Sharpe beats the matched alpha by 10% (about 2.07 if the
+# match is the Sharpe 1.88 one). So round 7 adds a third part, which raises Sharpe
+# when the parts are weakly related and also pulls correlation down.
+LEGS["val252"] = "val  = -ts_rank(enterprise_value / ts_backfill(cashflow_op, 60), 252);"
+R7_PARTS = {"vr": ("vr", 5), "val": ("val252", 0), "ovp": ("ovp", 0), "skew": ("skew", 5),
+            "fcfq": ("fcfq", 0), "oey": ("oey", 0)}
+
+
+def combo(**weights):
+    """e.g. combo(vr=0.3, val=0.5, ovp=0.2), using the round 7 base legs."""
+    defs, terms = [], []
+    for var, w in weights.items():
+        key, smooth = R7_PARTS[var]
+        defs.append(LEGS[key])
+        x = f"ts_mean({var}, {smooth})" if smooth else var
+        terms.append(f"{w} * group_rank({x}, industry)")
+    return "\n".join(defs) + "\n" + " + ".join(terms) + " - 0.5"
+
+
+BASE = dict(vr=0.4, val=0.6)
 CANDIDATES = [
-    dict(name="r6_alt_equal", code=mix(alt=True, **EQUAL)),
-    dict(name="r6_alt_equal_sector", code=mix(alt=True, grp="sector", **EQUAL)),
-    dict(name="r6_alt_equal_subind", code=mix(alt=True, grp="subindustry", **EQUAL),
-         neutralization="SUBINDUSTRY"),
-    dict(name="r6_alt_equal_market", code=mix(alt=True, **EQUAL), neutralization="MARKET"),
-    dict(name="r6_alt_equal_top1000", code=mix(alt=True, **EQUAL), universe="TOP1000"),
-    dict(name="r6_alt_lowAB", code=mix(alt=True, A=0.15, B=0.15, C=0.4, E=0.3)),
-    dict(name="r6_alt_lowAB_sector", code=mix(alt=True, grp="sector", A=0.15, B=0.15, C=0.4, E=0.3)),
-    dict(name="r6_alt_minAB", code=mix(alt=True, A=0.1, B=0.1, C=0.5, E=0.3)),
-    dict(name="r6_alt_noE", code=mix(alt=True, A=0.34, B=0.33, C=0.33)),
-    dict(name="r6_alt_lowA", code=mix(alt=True, A=0.1, B=0.25, C=0.35, E=0.3)),
+    dict(name="r7_base_dec6", code=combo(**BASE), decay=6),
+    dict(name="r7_base_subind", code=combo(**BASE), neutralization="SUBINDUSTRY"),
+    dict(name="r7_base_top1000", code=combo(**BASE), universe="TOP1000"),
+    dict(name="r7_plus_ovp", code=combo(vr=0.35, val=0.45, ovp=0.2)),
+    dict(name="r7_plus_skew", code=combo(vr=0.3, val=0.5, skew=0.2)),
+    dict(name="r7_plus_fcfq", code=combo(vr=0.3, val=0.5, fcfq=0.2)),
+    dict(name="r7_plus_oey", code=combo(vr=0.3, val=0.5, oey=0.2)),
+    dict(name="r7_plus_skew_ovp", code=combo(vr=0.3, val=0.4, skew=0.15, ovp=0.15)),
+    dict(name="r7_plus_oey_ovp", code=combo(vr=0.3, val=0.4, oey=0.15, ovp=0.15)),
+    dict(name="r7_plus_ovp30", code=combo(vr=0.3, val=0.4, ovp=0.3)),
 ]
 for c in CANDIDATES:
     c.setdefault("decay", 4)
