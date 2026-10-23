@@ -83,29 +83,46 @@ FAMILIES = {
 }
 
 
-def mix(**weights):
+# Round 5's mixes were Excellent but over 0.7 self-correlation: parts A and B are exact
+# copies of submitted alphas. Round 6 applies the doc's three decorrelation moves to
+# every part: a similar field, a similar operator, and a different grouping.
+# Every field here already ran without errors in earlier rounds.
+LEGS_ALT = {
+    **LEGS,
+    "vr":   "vr   = ts_backfill(implied_volatility_mean_120 / parkinson_volatility_60, 5);",
+    "val":  "val  = -ts_zscore(enterprise_value / ts_backfill(cashflow, 60), 252);",
+    "oey":  "oey  = ts_zscore(ts_backfill(operating_income, 60) / cap, 252);",
+    "lev":  "lev  = ts_rank(ts_backfill(liabilities, 60) / ts_backfill(assets, 60), 252);",
+    "stab": "stab = -ts_std_dev(ts_backfill(scl12_buzz, 5), 10);",
+}
+
+
+def mix(alt=False, grp="industry", **weights):
     """Weighted mix of families, e.g. mix(A=0.3, B=0.3, C=0.4)."""
+    legs = LEGS_ALT if alt else LEGS
     terms = []
     for fam, fw in weights.items():
         for leg, lw, smooth in FAMILIES[fam]:
             x = f"ts_mean({leg}, {smooth})" if smooth else leg
-            terms.append((leg, round(fw * lw, 3), f"group_rank({x}, industry)"))
-    defs = "\n".join(LEGS[leg] for leg, _, _ in terms)
+            terms.append((leg, round(fw * lw, 3), f"group_rank({x}, {grp})"))
+    defs = "\n".join(legs[leg] for leg, _, _ in terms)
     body = " + ".join(f"{w} * {gr}" for _, w, gr in terms)
     return f"{defs}\n{body} - 0.5"
 
 
+EQUAL = dict(A=0.25, B=0.25, C=0.25, E=0.25)
 CANDIDATES = [
-    dict(name="r5_ABC", code=mix(A=0.34, B=0.33, C=0.33)),
-    dict(name="r5_ABCE", code=mix(A=0.25, B=0.25, C=0.25, E=0.25)),
-    dict(name="r5_ABCE_lowA", code=mix(A=0.2, B=0.25, C=0.25, E=0.3)),
-    dict(name="r5_ABCE_lowB", code=mix(A=0.25, B=0.2, C=0.25, E=0.3)),
-    dict(name="r5_ABCE_lowC", code=mix(A=0.25, B=0.25, C=0.2, E=0.3)),
-    dict(name="r5_ABE", code=mix(A=0.35, B=0.35, E=0.3)),
-    dict(name="r5_ACE", code=mix(A=0.35, C=0.35, E=0.3)),
-    dict(name="r5_BCE", code=mix(B=0.35, C=0.35, E=0.3)),
-    dict(name="r5_ABC_top1000", code=mix(A=0.34, B=0.33, C=0.33), universe="TOP1000"),
-    dict(name="r5_ABCE_top1000", code=mix(A=0.25, B=0.25, C=0.25, E=0.25), universe="TOP1000"),
+    dict(name="r6_alt_equal", code=mix(alt=True, **EQUAL)),
+    dict(name="r6_alt_equal_sector", code=mix(alt=True, grp="sector", **EQUAL)),
+    dict(name="r6_alt_equal_subind", code=mix(alt=True, grp="subindustry", **EQUAL),
+         neutralization="SUBINDUSTRY"),
+    dict(name="r6_alt_equal_market", code=mix(alt=True, **EQUAL), neutralization="MARKET"),
+    dict(name="r6_alt_equal_top1000", code=mix(alt=True, **EQUAL), universe="TOP1000"),
+    dict(name="r6_alt_lowAB", code=mix(alt=True, A=0.15, B=0.15, C=0.4, E=0.3)),
+    dict(name="r6_alt_lowAB_sector", code=mix(alt=True, grp="sector", A=0.15, B=0.15, C=0.4, E=0.3)),
+    dict(name="r6_alt_minAB", code=mix(alt=True, A=0.1, B=0.1, C=0.5, E=0.3)),
+    dict(name="r6_alt_noE", code=mix(alt=True, A=0.34, B=0.33, C=0.33)),
+    dict(name="r6_alt_lowA", code=mix(alt=True, A=0.1, B=0.25, C=0.35, E=0.3)),
 ]
 for c in CANDIDATES:
     c.setdefault("decay", 4)
