@@ -252,6 +252,24 @@ class Brain:
         except Exception:
             return None  # check it on the website instead
 
+    def submitted_alphas(self):
+        """Every alpha on the account that has a submission date, newest first."""
+        found, offset = [], 0
+        while True:
+            r = self.request("GET", f"{API}/users/self/alphas",
+                             params={"limit": 100, "offset": offset, "order": "-dateCreated"})
+            page = r.json().get("results", []) if r.ok else []
+            found += [a for a in page if a.get("dateSubmitted")]
+            if len(page) < 100 or offset >= 2000:
+                return found
+            offset += 100
+
+    def corr_records(self, alpha_id):
+        """The submitted alphas this alpha correlates with, as BRAIN reports them."""
+        data = self.wait(f"{API}/alphas/{alpha_id}/correlations/self").json()
+        names = [p.get("name") for p in data.get("schema", {}).get("properties", [])]
+        return data.get("max"), [dict(zip(names, rec)) if names else rec for rec in data.get("records", [])]
+
     def submit(self, alpha_id):
         self.request("POST", f"{API}/alphas/{alpha_id}/submit")
         r = self.wait(f"{API}/alphas/{alpha_id}/submit")
@@ -358,6 +376,10 @@ def main():
     ap.add_argument("--only", help="only use alpha ideas whose name contains this text")
     ap.add_argument("--list", action="store_true", help="list alpha ideas and exit")
     ap.add_argument("--submit", metavar="ALPHA_ID", help="submit one alpha and exit")
+    ap.add_argument("--submitted", action="store_true",
+                    help="print the code and settings of every alpha you have submitted")
+    ap.add_argument("--corr", metavar="ALPHA_ID",
+                    help="show which submitted alphas this alpha correlates with")
     ap.add_argument("--target", type=float, default=2.5, help="fitness to aim for (default 2.5, Spectacular)")
     ap.add_argument("--top", type=int, default=4, help="how many ideas to tune after step 1 (default 4)")
     args = ap.parse_args()
@@ -370,6 +392,29 @@ def main():
     email = os.environ.get("BRAIN_EMAIL") or input("BRAIN email: ")
     password = os.environ.get("BRAIN_PASSWORD") or getpass.getpass("BRAIN password: ")
     brain = Brain(email, password)
+
+    if args.submitted:
+        alphas = brain.submitted_alphas()
+        out = []
+        for a in alphas:
+            st, is_ = a.get("settings", {}), a.get("is", {})
+            out.append(f"=== {a.get('id')}  submitted {str(a.get('dateSubmitted'))[:10]}  "
+                       f"sharpe {is_.get('sharpe')}  fitness {is_.get('fitness')}\n"
+                       f"Settings: {st.get('universe')} | {st.get('neutralization')} | decay {st.get('decay')}\n"
+                       f"Code:\n{(a.get('regular') or {}).get('code', a.get('regular'))}\n")
+        text = f"{len(alphas)} submitted alphas\n\n" + "\n".join(out)
+        os.makedirs("results", exist_ok=True)
+        with open("results/submitted.txt", "w") as f:
+            f.write(text)
+        print(text + "\nSaved results/submitted.txt")
+        return
+
+    if args.corr:
+        top, records = brain.corr_records(args.corr)
+        print(f"Max self-correlation: {top}")
+        for rec in records[:10]:
+            print(" ", rec)
+        return
 
     if args.submit:
         if input(f"Submit {args.submit}? This uses today's submission. Type yes: ").strip() == "yes":
