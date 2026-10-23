@@ -131,21 +131,23 @@ def combo(**weights):
     return "\n".join(defs) + "\n" + " + ".join(terms) + " - 0.5"
 
 
-# Round 8 result: more oey weight raised Sharpe (KPm5NzrN oey 0.2 -> wp92bkV1 oey 0.3,
-# Sharpe 2.24, fitness 2.51) but correlation with KPm5NzrN is 0.99 and the Sharpe is not
-# yet 10% above it. Correlation can't fall below 0.7 inside this family, so round 9 keeps
-# pushing Sharpe up: heavier oey, plus leverage, plus a few settings.
+# Round 9 result: heavier oey did not raise Sharpe; the 2023 test year fell from 1.95
+# (oey 0.2) to 1.41 (oey 0.5), and self-correlation stayed at 0.95-0.99 against
+# KPm5NzrN. The USA version of this idea is used up. Self-correlation is checked
+# against submitted alphas in the same region, so round 10 runs the fundamental part
+# (valuation, operating yield, leverage) in other regions, where nothing is submitted
+# yet. The options fields (vr) are USA data, so they are left out.
+FUND = combo(val=0.45, oey=0.4, lev=0.15)
+FUND2 = combo(val=0.6, oey=0.4)
 CANDIDATES = [
-    dict(name="r9_oey40", code=combo(vr=0.2, val=0.4, oey=0.4)),
-    dict(name="r9_oey50", code=combo(vr=0.15, val=0.35, oey=0.5)),
-    dict(name="r9_oey40_lev10", code=combo(vr=0.2, val=0.3, oey=0.4, lev=0.1)),
-    dict(name="r9_oey35_lev15", code=combo(vr=0.2, val=0.3, oey=0.35, lev=0.15)),
-    dict(name="r9_oey40_fcfq10", code=combo(vr=0.2, val=0.3, oey=0.4, fcfq=0.1)),
-    dict(name="r9_oey40_dec6", code=combo(vr=0.2, val=0.4, oey=0.4), decay=6),
-    dict(name="r9_oey40_dec3", code=combo(vr=0.2, val=0.4, oey=0.4), decay=3),
-    dict(name="r9_oey40_subind", code=combo(vr=0.2, val=0.4, oey=0.4), neutralization="SUBINDUSTRY"),
-    dict(name="r9_oey30_dec6", code=combo(vr=0.25, val=0.45, oey=0.3), decay=6),
-    dict(name="r9_oey30_lev10", code=combo(vr=0.2, val=0.4, oey=0.3, lev=0.1)),
+    dict(name="r10_eur_top1200", code=FUND, region="EUR", universe="TOP1200"),
+    dict(name="r10_eur_top800", code=FUND, region="EUR", universe="TOP800"),
+    dict(name="r10_eur_top1200_vo", code=FUND2, region="EUR", universe="TOP1200"),
+    dict(name="r10_asi_minvol1m", code=FUND, region="ASI", universe="MINVOL1M"),
+    dict(name="r10_asi_minvol1m_vo", code=FUND2, region="ASI", universe="MINVOL1M"),
+    dict(name="r10_glb_top3000", code=FUND, region="GLB", universe="TOP3000"),
+    dict(name="r10_chn_top2000u", code=FUND, region="CHN", universe="TOP2000U"),
+    dict(name="r10_jpn_top1600", code=FUND, region="JPN", universe="TOP1600"),
 ]
 for c in CANDIDATES:
     c.setdefault("decay", 4)
@@ -381,6 +383,8 @@ def search(brain, cands, target, top):
     for key, values in SEARCH_SPACE:
         trials = []
         for fam, (cand, _) in best.items():
+            if key == "universe" and settings_of(cand)["region"] != "USA":
+                continue  # the universe list is USA-only
             for v in values:
                 if v != settings_of(cand)[key]:
                     trials.append((fam, {**cand, key: v, "name": f"{fam} {key}={v}"}))
