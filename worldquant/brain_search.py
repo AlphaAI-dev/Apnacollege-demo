@@ -117,7 +117,7 @@ def mix(alt=False, grp="industry", **weights):
 # when the parts are weakly related and also pulls correlation down.
 LEGS["val252"] = "val  = -ts_rank(enterprise_value / ts_backfill(cashflow_op, 60), 252);"
 R7_PARTS = {"vr": ("vr", 5), "val": ("val252", 0), "ovp": ("ovp", 0), "skew": ("skew", 5),
-            "fcfq": ("fcfq", 0), "oey": ("oey", 0)}
+            "fcfq": ("fcfq", 0), "oey": ("oey", 0), "lev": ("lev", 0), "stab": ("stab", 0)}
 
 
 def combo(**weights):
@@ -131,18 +131,22 @@ def combo(**weights):
     return "\n".join(defs) + "\n" + " + ".join(terms) + " - 0.5"
 
 
-BASE = dict(vr=0.4, val=0.6)
+# Round 7 result: adding operating earnings yield (oey) passed and was submitted as
+# KPm5NzrN (Sharpe 1.85, self-correlation 0.93 accepted by the 10% Sharpe rule); adding
+# ovp or skew failed. Round 8 leans further on oey and the quality parts, aiming for a
+# Sharpe high enough to clear the 10% rule against KPm5NzrN too.
+WINNER = dict(vr=0.3, val=0.5, oey=0.2)
 CANDIDATES = [
-    dict(name="r7_base_dec6", code=combo(**BASE), decay=6),
-    dict(name="r7_base_subind", code=combo(**BASE), neutralization="SUBINDUSTRY"),
-    dict(name="r7_base_top1000", code=combo(**BASE), universe="TOP1000"),
-    dict(name="r7_plus_ovp", code=combo(vr=0.35, val=0.45, ovp=0.2)),
-    dict(name="r7_plus_skew", code=combo(vr=0.3, val=0.5, skew=0.2)),
-    dict(name="r7_plus_fcfq", code=combo(vr=0.3, val=0.5, fcfq=0.2)),
-    dict(name="r7_plus_oey", code=combo(vr=0.3, val=0.5, oey=0.2)),
-    dict(name="r7_plus_skew_ovp", code=combo(vr=0.3, val=0.4, skew=0.15, ovp=0.15)),
-    dict(name="r7_plus_oey_ovp", code=combo(vr=0.3, val=0.4, oey=0.15, ovp=0.15)),
-    dict(name="r7_plus_ovp30", code=combo(vr=0.3, val=0.4, ovp=0.3)),
+    dict(name="r8_oey30", code=combo(vr=0.25, val=0.45, oey=0.3)),
+    dict(name="r8_oey40", code=combo(vr=0.2, val=0.4, oey=0.4)),
+    dict(name="r8_oey_lev", code=combo(vr=0.25, val=0.4, oey=0.2, lev=0.15)),
+    dict(name="r8_oey_lev_stab", code=combo(vr=0.25, val=0.35, oey=0.2, lev=0.12, stab=0.08)),
+    dict(name="r8_oey_fcfq", code=combo(vr=0.25, val=0.4, oey=0.2, fcfq=0.15)),
+    dict(name="r8_oey_skew", code=combo(vr=0.25, val=0.4, oey=0.2, skew=0.15)),
+    dict(name="r8_oey_ovp", code=combo(vr=0.25, val=0.4, oey=0.2, ovp=0.15)),
+    dict(name="r8_winner_dec6", code=combo(**WINNER), decay=6),
+    dict(name="r8_winner_subind", code=combo(**WINNER), neutralization="SUBINDUSTRY"),
+    dict(name="r8_winner_top1000", code=combo(**WINNER), universe="TOP1000"),
 ]
 for c in CANDIDATES:
     c.setdefault("decay", 4)
