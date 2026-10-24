@@ -131,24 +131,49 @@ def combo(**weights):
     return "\n".join(defs) + "\n" + " + ".join(terms) + " - 0.5"
 
 
-# Round 9 result: heavier oey did not raise Sharpe; the 2023 test year fell from 1.95
-# (oey 0.2) to 1.41 (oey 0.5), and self-correlation stayed at 0.95-0.99 against
-# KPm5NzrN. The USA version of this idea is used up. Self-correlation is checked
-# against submitted alphas in the same region, so round 10 runs the fundamental part
-# (valuation, operating yield, leverage) in other regions, where nothing is submitted
-# yet. The options fields (vr) are USA data, so they are left out.
-FUND = combo(val=0.45, oey=0.4, lev=0.15)
-FUND2 = combo(val=0.6, oey=0.4)
+# Only USA is available. Every strong USA idea so far (vol/valuation, quality, skew+FCF,
+# oey) is already submitted, so variants of them fail self-correlation. Round 11 uses
+# datasets none of them touch: reported earnings (eps), price/volume, put-call ratio and
+# short-dated IV spread. New data passes self-correlation easily (round 4 ideas sat at
+# 0.39-0.57); the open question is whether each is strong enough.
+NEW = {
+    "epsg":   "epsg   = ts_delta(ts_backfill(eps, 60), 252) / close;",
+    "surp":   "surp   = (ts_backfill(eps, 60) - ts_delay(ts_backfill(est_eps, 60), 63)) / close;",
+    "lowvol": "lowvol = -ts_std_dev(returns, 252);",
+    "illiq":  "illiq  = ts_mean(abs(returns) / (volume * close + 1), 63);",
+    "mom":    "mom    = ts_delay(ts_sum(returns, 231), 21);",
+    "pcr":    "pcr    = -ts_zscore(ts_backfill(pcr_oi_270, 5), 60);",
+    "ivs30":  "ivs30  = ts_backfill((implied_volatility_call_30 - implied_volatility_put_30)"
+              " / implied_volatility_mean_30, 5);",
+    "margin": "margin = ts_delta(ts_backfill((revenue - cogs) / revenue, 60), 252);",
+}
+SMOOTH = {"ivs30": 5, "pcr": 5}
+
+
+def new_mix(grp="industry", **weights):
+    defs = "\n".join(NEW[k] for k in weights)
+    terms = " + ".join(
+        f"{w} * group_rank({f'ts_mean({k}, {SMOOTH[k]})' if k in SMOOTH else k}, {grp})"
+        for k, w in weights.items())
+    return f"{defs}\n{terms} - 0.5"
+
+
 CANDIDATES = [
-    dict(name="r10_eur_top1200", code=FUND, region="EUR", universe="TOP1200"),
-    dict(name="r10_eur_top800", code=FUND, region="EUR", universe="TOP800"),
-    dict(name="r10_eur_top1200_vo", code=FUND2, region="EUR", universe="TOP1200"),
-    dict(name="r10_asi_minvol1m", code=FUND, region="ASI", universe="MINVOL1M"),
-    dict(name="r10_asi_minvol1m_vo", code=FUND2, region="ASI", universe="MINVOL1M"),
-    dict(name="r10_glb_top3000", code=FUND, region="GLB", universe="TOP3000"),
-    dict(name="r10_chn_top2000u", code=FUND, region="CHN", universe="TOP2000U"),
-    dict(name="r10_jpn_top1600", code=FUND, region="JPN", universe="TOP1600"),
+    dict(name="r11_epsg", code=new_mix(epsg=1.0)),
+    dict(name="r11_surprise", code=new_mix(surp=1.0)),
+    dict(name="r11_eps_both", code=new_mix(epsg=0.5, surp=0.5)),
+    dict(name="r11_lowvol", code=new_mix(grp="sector", lowvol=1.0), neutralization="SECTOR"),
+    dict(name="r11_lowvol_illiq", code=new_mix(grp="sector", lowvol=0.6, illiq=0.4), neutralization="SECTOR"),
+    dict(name="r11_momentum", code=new_mix(mom=1.0), neutralization="MARKET"),
+    dict(name="r11_pcr", code=new_mix(pcr=1.0), neutralization="MARKET"),
+    dict(name="r11_ivspread30", code=new_mix(ivs30=1.0)),
+    dict(name="r11_margin", code=new_mix(margin=1.0)),
+    dict(name="r11_eps_lowvol", code=new_mix(epsg=0.35, surp=0.35, lowvol=0.3)),
+    dict(name="r11_eps_ivs_pcr", code=new_mix(epsg=0.3, surp=0.3, ivs30=0.2, pcr=0.2)),
+    dict(name="r11_all_new", code=new_mix(epsg=0.2, surp=0.2, lowvol=0.15, ivs30=0.15, pcr=0.15, margin=0.15)),
 ]
+for c in CANDIDATES:
+    c.setdefault("universe", "TOP1000")
 for c in CANDIDATES:
     c.setdefault("decay", 4)
 
@@ -316,7 +341,7 @@ FIELDS = ["name", "rating", "fitness", "sharpe", "turnover", "returns", "drawdow
 SEARCH_SPACE = [
     ("neutralization", ["MARKET", "SECTOR", "INDUSTRY", "SUBINDUSTRY"]),
     ("decay", [2, 4, 6, 8]),
-    ("universe", ["TOP200", "TOP500", "TOP1000"]),
+    ("universe", ["TOP200", "TOP500", "TOP1000", "TOP3000"]),
 ]
 
 
