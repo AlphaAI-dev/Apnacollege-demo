@@ -131,49 +131,48 @@ def combo(**weights):
     return "\n".join(defs) + "\n" + " + ".join(terms) + " - 0.5"
 
 
-# Only USA is available. Every strong USA idea so far (vol/valuation, quality, skew+FCF,
-# oey) is already submitted, so variants of them fail self-correlation. Round 11 uses
-# datasets none of them touch: reported earnings (eps), price/volume, put-call ratio and
-# short-dated IV spread. New data passes self-correlation easily (round 4 ideas sat at
-# 0.39-0.57); the open question is whether each is strong enough.
-NEW = {
-    "epsg":   "epsg   = ts_delta(ts_backfill(eps, 60), 252) / close;",
-    "surp":   "surp   = (ts_backfill(eps, 60) - ts_delay(ts_backfill(est_eps, 60), 63)) / close;",
-    "lowvol": "lowvol = -ts_std_dev(returns, 252);",
-    "illiq":  "illiq  = ts_mean(abs(returns) / (volume * close + 1), 63);",
-    "mom":    "mom    = ts_delay(ts_sum(returns, 231), 21);",
-    "pcr":    "pcr    = -ts_zscore(ts_backfill(pcr_oi_270, 5), 60);",
-    "ivs30":  "ivs30  = ts_backfill((implied_volatility_call_30 - implied_volatility_put_30)"
-              " / implied_volatility_mean_30, 5);",
-    "margin": "margin = ts_delta(ts_backfill((revenue - cogs) / revenue, 60), 252);",
-}
-SMOOTH = {"ivs30": 5, "pcr": 5}
+# Round 12 applies BRAIN's own guide for lowering correlation to the Spectacular alpha
+# wp92bkV1 (Sharpe 2.24, self-correlation 0.99): similar fields, similar operators
+# (zscore for rank, median for mean) and different groupings, including custom groups
+# built with bucket() and densify(). Several moves are combined per alpha, since one
+# move alone only took correlation from about 0.97 to 0.8 before.
+def r12(vr_f="implied_volatility_call_120 / parkinson_volatility_120", cf="cashflow_op",
+        ts_op="ts_rank", sm="ts_mean", grp="industry", gop="group_rank", custom=None,
+        w=(0.25, 0.45, 0.3)):
+    lines = [f"vr   = ts_backfill({vr_f}, 5);",
+             f"val  = -{ts_op}(enterprise_value / ts_backfill({cf}, 60), 252);",
+             f"oey  = {ts_op}(ts_backfill(operating_income, 60) / cap, 252);"]
+    if custom:
+        lines.append(f"cgrp = densify(bucket(rank({custom}), range=\"0.1,1,0.1\"));")
+        grp = "cgrp"
+    center = " - 0.5" if gop == "group_rank" else ""
+    lines.append(f"{w[0]} * {gop}({sm}(vr, 5), {grp}) + {w[1]} * {gop}(val, {grp})"
+                 f" + {w[2]} * {gop}(oey, {grp}){center}")
+    return "\n".join(lines)
 
 
-def new_mix(grp="industry", **weights):
-    defs = "\n".join(NEW[k] for k in weights)
-    terms = " + ".join(
-        f"{w} * group_rank({f'ts_mean({k}, {SMOOTH[k]})' if k in SMOOTH else k}, {grp})"
-        for k, w in weights.items())
-    return f"{defs}\n{terms} - 0.5"
-
-
+ALT_VR = "implied_volatility_mean_120 / parkinson_volatility_60"
 CANDIDATES = [
-    dict(name="r11_epsg", code=new_mix(epsg=1.0)),
-    dict(name="r11_surprise", code=new_mix(surp=1.0)),
-    dict(name="r11_eps_both", code=new_mix(epsg=0.5, surp=0.5)),
-    dict(name="r11_lowvol", code=new_mix(grp="sector", lowvol=1.0), neutralization="SECTOR"),
-    dict(name="r11_lowvol_illiq", code=new_mix(grp="sector", lowvol=0.6, illiq=0.4), neutralization="SECTOR"),
-    dict(name="r11_momentum", code=new_mix(mom=1.0), neutralization="MARKET"),
-    dict(name="r11_pcr", code=new_mix(pcr=1.0), neutralization="MARKET"),
-    dict(name="r11_ivspread30", code=new_mix(ivs30=1.0)),
-    dict(name="r11_margin", code=new_mix(margin=1.0)),
-    dict(name="r11_eps_lowvol", code=new_mix(epsg=0.35, surp=0.35, lowvol=0.3)),
-    dict(name="r11_eps_ivs_pcr", code=new_mix(epsg=0.3, surp=0.3, ivs30=0.2, pcr=0.2)),
-    dict(name="r11_all_new", code=new_mix(epsg=0.2, surp=0.2, lowvol=0.15, ivs30=0.15, pcr=0.15, margin=0.15)),
+    dict(name="r12_size_groups_z", code=r12(ts_op="ts_zscore", gop="group_zscore", custom="cap"),
+         neutralization="MARKET"),
+    dict(name="r12_size_groups", code=r12(custom="cap"), neutralization="MARKET"),
+    dict(name="r12_vol_groups", code=r12(custom="ts_std_dev(returns, 60)"), neutralization="INDUSTRY"),
+    dict(name="r12_vol_groups_z", code=r12(ts_op="ts_zscore", gop="group_zscore",
+                                           custom="ts_std_dev(returns, 60)"), neutralization="SECTOR"),
+    dict(name="r12_fields_sector_subind", code=r12(vr_f=ALT_VR, cf="cashflow", sm="ts_median", grp="sector"),
+         neutralization="SUBINDUSTRY"),
+    dict(name="r12_fields_ops_sector", code=r12(vr_f=ALT_VR, cf="cashflow", ts_op="ts_zscore", sm="ts_median",
+                                                grp="sector", gop="group_zscore"), neutralization="SECTOR"),
+    dict(name="r12_fields_size_groups", code=r12(vr_f=ALT_VR, cf="cashflow", sm="ts_median", custom="cap"),
+         neutralization="MARKET"),
+    dict(name="r12_liquidity_groups", code=r12(custom="adv20"), neutralization="SECTOR"),
+    dict(name="r12_all_moves", code=r12(vr_f=ALT_VR, cf="cashflow", ts_op="ts_zscore", sm="ts_median",
+                                        gop="group_zscore", custom="ts_std_dev(returns, 60)"),
+         neutralization="MARKET"),
+    dict(name="r12_size_groups_top1000", code=r12(custom="cap"), neutralization="MARKET", universe="TOP1000"),
 ]
 for c in CANDIDATES:
-    c.setdefault("universe", "TOP1000")
+    c.setdefault("universe", "TOP500")
 for c in CANDIDATES:
     c.setdefault("decay", 4)
 
