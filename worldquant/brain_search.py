@@ -131,45 +131,31 @@ def combo(**weights):
     return "\n".join(defs) + "\n" + " + ".join(terms) + " - 0.5"
 
 
-# Round 12 applies BRAIN's own guide for lowering correlation to the Spectacular alpha
-# wp92bkV1 (Sharpe 2.24, self-correlation 0.99): similar fields, similar operators
-# (zscore for rank, median for mean) and different groupings, including custom groups
-# built with bucket() and densify(). Several moves are combined per alpha, since one
-# move alone only took correlation from about 0.97 to 0.8 before.
-def r12(vr_f="implied_volatility_call_120 / parkinson_volatility_120", cf="cashflow_op",
-        ts_op="ts_rank", sm="ts_mean", grp="industry", gop="group_rank", custom=None,
-        w=(0.25, 0.45, 0.3)):
-    lines = [f"vr   = ts_backfill({vr_f}, 5);",
-             f"val  = -{ts_op}(enterprise_value / ts_backfill({cf}, 60), 252);",
-             f"oey  = {ts_op}(ts_backfill(operating_income, 60) / cap, 252);"]
-    if custom:
-        lines.append(f"cgrp = densify(bucket(rank({custom}), range=\"0.1,1,0.1\"));")
-        grp = "cgrp"
-    center = " - 0.5" if gop == "group_rank" else ""
-    lines.append(f"{w[0]} * {gop}({sm}(vr, 5), {grp}) + {w[1]} * {gop}(val, {grp})"
-                 f" + {w[2]} * {gop}(oey, {grp}){center}")
-    return "\n".join(lines)
+# Round 13: the Spectacular alphas wp92bkV1 (Sharpe 2.24) and 00JM83oJ (2.16) fail only
+# self-correlation (0.98-0.99 with KPm5NzrN) and need about 10% more Sharpe than KPm5NzrN.
+# Correlation won't move inside this family, so these variants keep the same idea and
+# only try to raise Sharpe: inverse-volatility weighting (less money in jumpy stocks,
+# so a steadier PnL), lower decay (decay 3 lifted Sharpe 1.74 -> 1.79 in round 2), and
+# a little FCF quality (best 2023 test year so far).
+def invvol(code, days=60):
+    """Divide the final signal by recent volatility."""
+    *defs, last = code.split("\n")
+    return "\n".join(defs + [f"({last}) / ts_std_dev(returns, {days})"])
 
 
-ALT_VR = "implied_volatility_mean_120 / parkinson_volatility_60"
+WP92 = combo(vr=0.25, val=0.45, oey=0.3)                 # wp92bkV1
+JM83 = combo(vr=0.25, val=0.4, oey=0.2, lev=0.15)        # 00JM83oJ
 CANDIDATES = [
-    dict(name="r12_size_groups_z", code=r12(ts_op="ts_zscore", gop="group_zscore", custom="cap"),
-         neutralization="MARKET"),
-    dict(name="r12_size_groups", code=r12(custom="cap"), neutralization="MARKET"),
-    dict(name="r12_vol_groups", code=r12(custom="ts_std_dev(returns, 60)"), neutralization="INDUSTRY"),
-    dict(name="r12_vol_groups_z", code=r12(ts_op="ts_zscore", gop="group_zscore",
-                                           custom="ts_std_dev(returns, 60)"), neutralization="SECTOR"),
-    dict(name="r12_fields_sector_subind", code=r12(vr_f=ALT_VR, cf="cashflow", sm="ts_median", grp="sector"),
-         neutralization="SUBINDUSTRY"),
-    dict(name="r12_fields_ops_sector", code=r12(vr_f=ALT_VR, cf="cashflow", ts_op="ts_zscore", sm="ts_median",
-                                                grp="sector", gop="group_zscore"), neutralization="SECTOR"),
-    dict(name="r12_fields_size_groups", code=r12(vr_f=ALT_VR, cf="cashflow", sm="ts_median", custom="cap"),
-         neutralization="MARKET"),
-    dict(name="r12_liquidity_groups", code=r12(custom="adv20"), neutralization="SECTOR"),
-    dict(name="r12_all_moves", code=r12(vr_f=ALT_VR, cf="cashflow", ts_op="ts_zscore", sm="ts_median",
-                                        gop="group_zscore", custom="ts_std_dev(returns, 60)"),
-         neutralization="MARKET"),
-    dict(name="r12_size_groups_top1000", code=r12(custom="cap"), neutralization="MARKET", universe="TOP1000"),
+    dict(name="r13_wp92_invvol60", code=invvol(WP92, 60)),
+    dict(name="r13_wp92_invvol20", code=invvol(WP92, 20)),
+    dict(name="r13_wp92_decay3", code=WP92, decay=3),
+    dict(name="r13_wp92_decay2", code=WP92, decay=2),
+    dict(name="r13_wp92_invvol60_decay3", code=invvol(WP92, 60), decay=3),
+    dict(name="r13_wp92_fcfq_invvol60", code=invvol(combo(vr=0.2, val=0.4, oey=0.3, fcfq=0.1), 60)),
+    dict(name="r13_jm83_invvol60", code=invvol(JM83, 60)),
+    dict(name="r13_jm83_decay3", code=JM83, decay=3),
+    dict(name="r13_jm83_invvol60_decay3", code=invvol(JM83, 60), decay=3),
+    dict(name="r13_wp92_invvol120", code=invvol(WP92, 120)),
 ]
 for c in CANDIDATES:
     c.setdefault("universe", "TOP500")
