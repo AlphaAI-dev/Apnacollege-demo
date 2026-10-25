@@ -305,17 +305,26 @@ class Brain:
         names = [p.get("name") for p in data.get("schema", {}).get("properties", [])]
         return data.get("max"), [dict(zip(names, rec)) if names else rec for rec in data.get("records", [])]
 
+    def check(self, alpha_id):
+        """Every row of the "Check Submission" test, as BRAIN reports them."""
+        try:
+            return self.wait(f"{API}/alphas/{alpha_id}/check").json().get("is", {}).get("checks", [])
+        except Exception:
+            return []
+
     def submit(self, alpha_id):
+        """Submit an alpha; returns True when BRAIN accepted it."""
         self.request("POST", f"{API}/alphas/{alpha_id}/submit")
         r = self.wait(f"{API}/alphas/{alpha_id}/submit")
         if r.status_code == 404:
             print("Not found: the alpha may already be submitted.")
-            return
+            return False
         checks = r.json().get("is", {}).get("checks", []) if r.content else []
         for c in checks:
             print(f"  {c.get('result', '?'):8} {c.get('name')} {c.get('value', '')}")
-        failed = [c for c in checks if c.get("result") == "FAIL"]
+        failed = [c for c in checks if c.get("result") in ("FAIL", "ERROR")]
         print("Submission FAILED." if failed else "Submitted.")
+        return not failed
 
 
 FIELDS = ["name", "rating", "fitness", "sharpe", "turnover", "returns", "drawdown",
