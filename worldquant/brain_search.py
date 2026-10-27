@@ -193,9 +193,13 @@ class Brain:
         sys.exit(f"Login failed ({r.status_code}): {body}")
 
     def request(self, method, url, **kwargs):
-        """Send a request, re-logging in once on 401 and waiting out 429s."""
-        for _ in range(20):
-            r = self.session.request(method, url, timeout=60, **kwargs)
+        """Send a request, re-logging in on 401, waiting out 429s and retrying timeouts."""
+        for attempt in range(20):
+            try:
+                r = self.session.request(method, url, timeout=120, **kwargs)
+            except (requests.Timeout, requests.ConnectionError):
+                time.sleep(min(60, 5 * 2 ** attempt))  # BRAIN is busy; back off and try again
+                continue
             if r.status_code == 401:
                 with self.lock:
                     self.login()
