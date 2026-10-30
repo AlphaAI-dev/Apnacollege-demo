@@ -239,6 +239,9 @@ def main():
                     help="stop after this many Excellent-or-better today (default 5)")
     ap.add_argument("--min-fitness", type=float, default=2.0, help="lowest fitness to check/submit (default 2.0)")
     ap.add_argument("--max-sims", type=int, default=400, help="stop after this many simulations (default 400)")
+    ap.add_argument("--find", type=int, default=0,
+                    help="without --auto-submit: stop after finding this many passing alphas, each built "
+                         "from a different mix of parts, and print them for you to submit")
     args = ap.parse_args()
 
     state = load_state()
@@ -251,7 +254,11 @@ def main():
         today = [s for s in state["submitted"] if s["day"] == brain_day()]
         return (sum(s["fitness"] > 2.5 for s in today), sum(s["fitness"] > 2.0 for s in today))
 
+    found = []  # passing alphas kept for you to submit (with --find)
+
     def target_reached():
+        if args.find and not args.auto_submit:
+            return len(found) >= args.find
         spec, exc = today_counts()
         return spec >= args.spectacular or exc >= args.excellent
 
@@ -294,6 +301,14 @@ def main():
                         f"self-corr {row.get('self_corr')}  {row['rating']}")
                     if (row["fitness"] or 0) >= args.min_fitness and not row.get("failed_checks") and corr_ok(row):
                         ok, _ = full_check(brain, row["alpha_id"])
+                        # Alphas from the same mix of parts would fail against each other once one
+                        # is submitted, so --find keeps one per mix.
+                        mix_id = (sorted(g["legs"]), g["group"])
+                        if ok and args.find and not args.auto_submit:
+                            if mix_id in [m for m, _ in found]:
+                                ok = False
+                            else:
+                                found.append((mix_id, paste_block(code, g, row)))
                         if ok:
                             log("PASSES EVERY CHECK:\n" + paste_block(code, g, row))
                             if args.auto_submit and not target_reached() and brain.submit(row["alpha_id"]):
@@ -309,6 +324,9 @@ def main():
     save_state(state)
     spec, exc = today_counts()
     reason = "target reached" if target_reached() else f"{sims} simulations run"
+    if args.find and not args.auto_submit:
+        log(f"\n=== {len(found)} ALPHAS READY TO SUBMIT (submit the first; then run Check Submission on the next "
+            f"before submitting it) ===\n" + "\n".join(block for _, block in found))
     log(f"--- done ({reason}). Today: {spec} Spectacular, {exc} Excellent or better submitted. "
         f"Passing alphas are in {LOG_FILE} ---")
 
