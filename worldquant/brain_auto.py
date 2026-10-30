@@ -62,8 +62,9 @@ PARTS = {
 CUSTOM_GROUPS = {
     "size": 'cgrp = densify(bucket(rank(cap), range="0.1,1,0.1"));',
     "vol": 'cgrp = densify(bucket(rank(ts_std_dev(returns, 60)), range="0.1,1,0.1"));',
+    "liq": 'cgrp = densify(bucket(rank(adv20), range="0.1,1,0.1"));',
 }
-GROUPS = ["industry", "sector", "subindustry", "size", "vol"]
+GROUPS = ["industry", "sector", "subindustry", "size", "vol", "liq", "size", "vol", "liq"]
 SETTING_CHOICES = dict(universe=["TOP200", "TOP500", "TOP1000", "TOP3000"],
                        neutralization=["MARKET", "SECTOR", "INDUSTRY", "SUBINDUSTRY"],
                        decay=[2, 3, 4, 5, 6, 8], truncation=[0.03, 0.05, 0.08])
@@ -86,6 +87,12 @@ SEEDS = [
     genome(dict(vr=0.25, val=0.45, oey=0.3), group="vol"),           # Excellent with vol groups
     genome(dict(vr=0.12, val=0.2, oey=0.08, ovp=0.2, lowvol=0.2, surp=0.2)),
     genome(dict(val=0.3, oey=0.2, ovp=0.25, skew=0.25), neutralization="SUBINDUSTRY"),
+    # 78LAxOA1 passed (self-corr 0.69) by ranking inside volatility buckets with Market
+    # neutralization and a sentiment part; these reuse that idea with other buckets/parts.
+    genome(dict(vr=0.38, oey=0.41, stab=0.21), group="vol", neutralization="MARKET"),
+    genome(dict(vr=0.35, val=0.45, stab=0.2), group="size", neutralization="MARKET"),
+    genome(dict(oey=0.4, skew=0.35, stab=0.25), group="liq", neutralization="SECTOR"),
+    genome(dict(val=0.45, fcfq=0.35, stab=0.2), group="vol", neutralization="MARKET", universe="TOP1000"),
 ]
 
 
