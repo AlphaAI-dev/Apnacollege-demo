@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """
-Keep searching for WorldQuant BRAIN alphas until today's target is reached.
+Search WorldQuant BRAIN for alphas that pass every check, then stop.
 
 Each round it takes the best alphas found so far, changes one or two things
 (a weight, a part, a field, an operator, the grouping, or a setting), simulates
 the result, and runs BRAIN's own "Check Submission" on anything rated Excellent
-or better. With --auto-submit it submits every alpha that passes every check.
+or better. An alpha only counts when every row of that check passes, including
+self-correlation (below 0.7, or Sharpe at least 10% above the alpha it matches).
 
-It stops when today's target is reached (default: 4 Spectacular or 5 Excellent-
-or-better submissions, counted on the BRAIN day in US Eastern time), when it has
-run --max-sims simulations, or when you press Ctrl+C. Progress is saved in
-results/auto_state.json, so running it again continues where it left off.
+By default it submits nothing: it stops once it has 2 Excellent (fitness 2.0-2.5)
+and 2 Spectacular (fitness above 2.5) passing alphas, prints their code, settings
+and links, and saves them to results/found_alphas.txt for you to submit by hand.
+It also stops after --max-sims simulations, or when you press Control+C.
+Progress is saved in results/auto_state.json, so a rerun continues the search.
 
 Usage:
-    python3 brain_auto.py                     # search, print passing alphas, submit nothing
-    python3 brain_auto.py --auto-submit       # also submit every alpha that passes
-    python3 brain_auto.py --auto-submit --spectacular 10 --excellent 10
+    python3 brain_auto.py                                    # find 2 Excellent + 2 Spectacular
+    python3 brain_auto.py --want-excellent 1 --want-spectacular 3
+    python3 brain_auto.py --auto-submit                      # submit as it goes instead
 """
 import argparse
 import copy
@@ -246,9 +248,10 @@ def main():
                     help="stop after this many Excellent-or-better today (default 5)")
     ap.add_argument("--min-fitness", type=float, default=2.0, help="lowest fitness to check/submit (default 2.0)")
     ap.add_argument("--max-sims", type=int, default=400, help="stop after this many simulations (default 400)")
-    ap.add_argument("--find", type=int, default=0,
-                    help="without --auto-submit: stop after finding this many passing alphas, each built "
-                         "from a different mix of parts, and print them for you to submit")
+    ap.add_argument("--want-excellent", type=int, default=2,
+                    help="without --auto-submit: Excellent alphas to find (fitness 2.0-2.5, default 2)")
+    ap.add_argument("--want-spectacular", type=int, default=2,
+                    help="without --auto-submit: Spectacular alphas to find (fitness above 2.5, default 2)")
     args = ap.parse_args()
 
     state = load_state()
@@ -261,11 +264,23 @@ def main():
         today = [s for s in state["submitted"] if s["day"] == brain_day()]
         return (sum(s["fitness"] > 2.5 for s in today), sum(s["fitness"] > 2.0 for s in today))
 
-    found = []  # passing alphas kept for you to submit (with --find)
+    found = []  # (mix, fitness, details) of passing alphas kept for you to submit
+
+    def found_counts():
+        spec = sum(f > 2.5 for _, f, _ in found)
+        return spec, len(found) - spec
+
+    def wanted(fitness):
+        """Does this passing alpha fill a slot we still need? Extra Spectacular ones fill Excellent slots."""
+        spec, exc = found_counts()
+        if fitness > 2.5 and spec < args.want_spectacular:
+            return True
+        return exc + max(0, spec - args.want_spectacular) < args.want_excellent
 
     def target_reached():
-        if args.find and not args.auto_submit:
-            return len(found) >= args.find
+        if not args.auto_submit:
+            spec, exc = found_counts()
+            return spec >= args.want_spectacular and exc + spec - args.want_spectacular >= args.want_excellent
         spec, exc = today_counts()
         return spec >= args.spectacular or exc >= args.excellent
 
@@ -311,13 +326,16 @@ def main():
                 if (row["fitness"] or 0) >= args.min_fitness and not row.get("failed_checks") and corr_ok(row):
                     ok, _ = full_check(brain, row["alpha_id"])
                     # Alphas from the same mix of parts would fail against each other once one
-                    # is submitted, so --find keeps one per mix.
+                    # is submitted, so only one per mix is kept.
                     mix_id = (sorted(g["legs"]), g["group"])
-                    if ok and args.find and not args.auto_submit:
-                        if mix_id in [m for m, _ in found]:
+                    if ok and not args.auto_submit:
+                        if mix_id in [m for m, _, _ in found] or not wanted(row["fitness"]):
                             ok = False
                         else:
-                            found.append((mix_id, paste_block(code, g, row)))
+                            found.append((mix_id, row["fitness"], paste_block(code, g, row)))
+                            spec, exc = found_counts()
+                            log(f"FOUND {row['alpha_id']} ({rating(row['fitness'])}). "
+                                f"So far: {spec} Spectacular, {exc} Excellent.")
                     if ok:
                         log("PASSES EVERY CHECK:\n" + paste_block(code, g, row))
                         if args.auto_submit and not target_reached() and brain.submit(row["alpha_id"]):
@@ -333,9 +351,14 @@ def main():
     save_state(state)
     spec, exc = today_counts()
     reason = "target reached" if target_reached() else f"{sims} simulations run"
-    if args.find and not args.auto_submit:
-        log(f"\n=== {len(found)} ALPHAS READY TO SUBMIT (submit the first; then run Check Submission on the next "
-            f"before submitting it) ===\n" + "\n".join(block for _, block in found))
+    if not args.auto_submit:
+        found.sort(key=lambda x: -x[1])
+        summary = (f"=== {len(found)} ALPHAS THAT PASSED EVERY CHECK (none submitted) ===\n"
+                   "Submit the first. Before each next one, click Check Submission again: once one is\n"
+                   "submitted, the others are compared with it too.\n\n" + "\n".join(b for _, _, b in found))
+        with open("results/found_alphas.txt", "w") as f:
+            f.write(summary)
+        log("\n" + summary + "Saved results/found_alphas.txt")
     log(f"--- done ({reason}). Today: {spec} Spectacular, {exc} Excellent or better submitted. "
         f"Passing alphas are in {LOG_FILE} ---")
 
