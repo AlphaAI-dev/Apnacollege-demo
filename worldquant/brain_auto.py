@@ -267,58 +267,60 @@ def main():
     sims = finished = 0
     running = {}
     try:
-        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT) as pool:
-            while not target_reached() and (running or sims < args.max_sims):
-                while len(running) < MAX_CONCURRENT and sims < args.max_sims:
-                    nxt = next_candidate(state, tried)
-                    if nxt is None:
-                        break
-                    g, code, k = nxt
-                    cand = dict(name=f"auto{len(tried)}", code=code, **g["settings"])
-                    running[pool.submit(brain.simulate, cand)] = (g, code, k)
-                    sims += 1
-                if not running:
+        # No 'with' block: leaving one waits for simulations still running, which made
+        # Ctrl+C look like it did nothing.
+        pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENT)
+        while not target_reached() and (running or sims < args.max_sims):
+            while len(running) < MAX_CONCURRENT and sims < args.max_sims:
+                nxt = next_candidate(state, tried)
+                if nxt is None:
                     break
-                done, _ = wait(running, return_when=FIRST_COMPLETED)
-                for fut in done:
-                    g, code, k = running.pop(fut)
-                    finished += 1
-                    try:
-                        row = fut.result()
-                    except Exception as e:
-                        row = dict(error=f"{type(e).__name__}: {e}")
-                    state["tried"].append(k)
-                    if row.get("error"):
-                        log(f"  ERROR {row['error'][:120]}")
-                        m = re.search(r'unknown (?:variable|operator) "(\w+)"', row["error"])
-                        if m:
-                            state["bad_tokens"].append(m.group(1))
-                        save_state(state)
-                        continue
-                    state["pool"].append(dict(genome=g, row={x: row.get(x) for x in
-                                                             ("fitness", "sharpe", "self_corr", "corr_check")}))
-                    log(f"  #{finished:<4} fitness {row['fitness']}  sharpe {row['sharpe']}  "
-                        f"self-corr {row.get('self_corr')}  {row['rating']}")
-                    if (row["fitness"] or 0) >= args.min_fitness and not row.get("failed_checks") and corr_ok(row):
-                        ok, _ = full_check(brain, row["alpha_id"])
-                        # Alphas from the same mix of parts would fail against each other once one
-                        # is submitted, so --find keeps one per mix.
-                        mix_id = (sorted(g["legs"]), g["group"])
-                        if ok and args.find and not args.auto_submit:
-                            if mix_id in [m for m, _ in found]:
-                                ok = False
-                            else:
-                                found.append((mix_id, paste_block(code, g, row)))
-                        if ok:
-                            log("PASSES EVERY CHECK:\n" + paste_block(code, g, row))
-                            if args.auto_submit and not target_reached() and brain.submit(row["alpha_id"]):
-                                state["submitted"].append(dict(day=brain_day(), alpha_id=row["alpha_id"],
-                                                               fitness=row["fitness"], code=code,
-                                                               settings=g["settings"]))
-                                spec, exc = today_counts()
-                                log(f"SUBMITTED {row['alpha_id']} ({rating(row['fitness'])}). "
-                                    f"Today: {spec} Spectacular, {exc} Excellent or better.")
+                g, code, k = nxt
+                cand = dict(name=f"auto{len(tried)}", code=code, **g["settings"])
+                running[pool.submit(brain.simulate, cand)] = (g, code, k)
+                sims += 1
+            if not running:
+                break
+            done, _ = wait(running, return_when=FIRST_COMPLETED)
+            for fut in done:
+                g, code, k = running.pop(fut)
+                finished += 1
+                try:
+                    row = fut.result()
+                except Exception as e:
+                    row = dict(error=f"{type(e).__name__}: {e}")
+                state["tried"].append(k)
+                if row.get("error"):
+                    log(f"  ERROR {row['error'][:120]}")
+                    m = re.search(r'unknown (?:variable|operator) "(\w+)"', row["error"])
+                    if m:
+                        state["bad_tokens"].append(m.group(1))
                     save_state(state)
+                    continue
+                state["pool"].append(dict(genome=g, row={x: row.get(x) for x in
+                                                         ("fitness", "sharpe", "self_corr", "corr_check")}))
+                log(f"  #{finished:<4} fitness {row['fitness']}  sharpe {row['sharpe']}  "
+                    f"self-corr {row.get('self_corr')}  {row['rating']}")
+                if (row["fitness"] or 0) >= args.min_fitness and not row.get("failed_checks") and corr_ok(row):
+                    ok, _ = full_check(brain, row["alpha_id"])
+                    # Alphas from the same mix of parts would fail against each other once one
+                    # is submitted, so --find keeps one per mix.
+                    mix_id = (sorted(g["legs"]), g["group"])
+                    if ok and args.find and not args.auto_submit:
+                        if mix_id in [m for m, _ in found]:
+                            ok = False
+                        else:
+                            found.append((mix_id, paste_block(code, g, row)))
+                    if ok:
+                        log("PASSES EVERY CHECK:\n" + paste_block(code, g, row))
+                        if args.auto_submit and not target_reached() and brain.submit(row["alpha_id"]):
+                            state["submitted"].append(dict(day=brain_day(), alpha_id=row["alpha_id"],
+                                                           fitness=row["fitness"], code=code,
+                                                           settings=g["settings"]))
+                            spec, exc = today_counts()
+                            log(f"SUBMITTED {row['alpha_id']} ({rating(row['fitness'])}). "
+                                f"Today: {spec} Spectacular, {exc} Excellent or better.")
+                save_state(state)
     except KeyboardInterrupt:
         log("Stopped by Ctrl+C.")
     save_state(state)
@@ -333,3 +335,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # Exit now instead of waiting for simulations still running on BRAIN's side.
+    os._exit(0)
