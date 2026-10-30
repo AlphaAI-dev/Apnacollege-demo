@@ -194,14 +194,15 @@ def corr_ok(row):
 
 def parent_score(entry):
     row = entry["row"]
-    # Alphas that already pass self-correlation make better parents than ones that don't.
-    return row["fitness"] * (1.0 if corr_ok(row) else 0.75)
+    # Children of high-correlation alphas stay high-correlation (the 10/30 run: 24 of 24
+    # above 0.67), so parents that fail self-correlation are heavily discounted.
+    return row["fitness"] * (1.0 if corr_ok(row) else 0.4)
 
 
 def pick_parent(state):
     pool = [e for e in state["pool"] if e["row"].get("fitness") is not None]
-    if not pool or random.random() < 0.15:
-        return random.choice(SEEDS)
+    if not pool or random.random() < 0.35:
+        return random.choice(SEEDS[-4:] if random.random() < 0.6 else SEEDS)  # favour the bucket seeds
     pool.sort(key=parent_score, reverse=True)
     return max(random.sample(pool[:15], min(4, len(pool[:15]))), key=parent_score)["genome"]
 
