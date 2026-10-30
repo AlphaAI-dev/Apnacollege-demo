@@ -317,18 +317,25 @@ class Brain:
             return []
 
     def submit(self, alpha_id):
-        """Submit an alpha; returns True when BRAIN accepted it."""
-        self.request("POST", f"{API}/alphas/{alpha_id}/submit")
+        """Submit an alpha; returns True only once BRAIN shows it as submitted."""
+        post = self.request("POST", f"{API}/alphas/{alpha_id}/submit")
+        if not post.ok:
+            print(f"Submit request refused ({post.status_code}): {post.text[:200]}")
         r = self.wait(f"{API}/alphas/{alpha_id}/submit")
-        if r.status_code == 404:
-            print("Not found: the alpha may already be submitted.")
-            return False
-        checks = r.json().get("is", {}).get("checks", []) if r.content else []
+        checks = r.json().get("is", {}).get("checks", []) if r.ok and r.content else []
         for c in checks:
             print(f"  {c.get('result', '?'):8} {c.get('name')} {c.get('value', '')}")
-        failed = [c for c in checks if c.get("result") in ("FAIL", "ERROR")]
-        print("Submission FAILED." if failed else "Submitted.")
-        return not failed
+        # The submit endpoint's reply alone does not prove the submission went through,
+        # so confirm on the alpha itself.
+        for _ in range(10):
+            alpha = self.request("GET", f"{API}/alphas/{alpha_id}").json()
+            if alpha.get("dateSubmitted"):
+                print(f"CONFIRMED submitted at {alpha['dateSubmitted']}: {PLATFORM}/alpha/{alpha_id}")
+                return True
+            time.sleep(15)
+        print(f"NOT submitted (BRAIN status: {alpha.get('status')}). Submit it on the website: "
+              f"{PLATFORM}/alpha/{alpha_id}")
+        return False
 
 
 FIELDS = ["name", "rating", "fitness", "sharpe", "turnover", "returns", "drawdown",
