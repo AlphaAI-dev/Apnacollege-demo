@@ -219,9 +219,9 @@ class Brain:
                 return r
             time.sleep(retry)
 
-    def simulate(self, cand):
+    def payload(self, cand):
         settings = settings_of(cand)
-        payload = {
+        return {
             "type": "REGULAR",
             "regular": cand["code"],
             "settings": {
@@ -239,14 +239,38 @@ class Brain:
                 "visualization": False,
             },
         }
-        row = dict(name=cand["name"], universe=settings["universe"],
-                   neutralization=settings["neutralization"], decay=settings["decay"],
-                   truncation=settings["truncation"], code=cand["code"])
 
-        r = self.request("POST", f"{API}/simulations", json=payload)
+    def base_row(self, cand):
+        settings = settings_of(cand)
+        return dict(name=cand["name"], universe=settings["universe"],
+                    neutralization=settings["neutralization"], decay=settings["decay"],
+                    truncation=settings["truncation"], code=cand["code"])
+
+    def simulate(self, cand):
+        r = self.request("POST", f"{API}/simulations", json=self.payload(cand))
         if "Location" not in r.headers:
-            return {**row, "error": f"{r.status_code} {r.text[:200]}"}
-        result = self.wait(r.headers["Location"]).json()
+            return {**self.base_row(cand), "error": f"{r.status_code} {r.text[:200]}"}
+        return self.finish(cand, self.wait(r.headers["Location"]).json())
+
+    def simulate_many(self, cands):
+        """Run up to 10 candidates as one multi-simulation; falls back to one at a time."""
+        if len(cands) == 1:
+            return [self.simulate(cands[0])]
+        r = self.request("POST", f"{API}/simulations", json=[self.payload(c) for c in cands])
+        if "Location" not in r.headers:
+            print(f"Multi-simulation refused ({r.status_code}: {r.text[:120]}); running one at a time.")
+            return [self.simulate(c) for c in cands]
+        parent = self.wait(r.headers["Location"]).json()
+        children = parent.get("children") or []
+        if not children:
+            msg = parent.get("message") or parent.get("status") or str(parent)[:200]
+            return [{**self.base_row(c), "error": msg} for c in cands]
+        return [self.finish(c, self.wait(f"{API}/simulations/{child}").json())
+                for c, child in zip(cands, children)]
+
+    def finish(self, cand, result):
+        """Turn a finished simulation into a row of stats."""
+        row = self.base_row(cand)
         if "alpha" not in result:
             return {**row, "error": result.get("message") or result.get("status") or str(result)[:200]}
 
@@ -264,6 +288,7 @@ class Brain:
             returns=round(100 * stats["returns"], 2) if stats.get("returns") is not None else None,
             drawdown=round(100 * stats["drawdown"], 2) if stats.get("drawdown") is not None else None,
             failed_checks=" ".join(failed),
+            op_count=(alpha.get("regular") or {}).get("operatorCount"),
             self_corr=self.self_correlation(alpha_id),
         )
         row["rating"] = rating(row["fitness"])
@@ -272,6 +297,13 @@ class Brain:
         if (row["self_corr"] or 0) >= 0.7 and (row["fitness"] or 0) >= 2.0:
             row["corr_check"] = self.corr_check(alpha_id)
         return row
+
+    def tag(self, alpha_id, name, tags):
+        """Name and tag an alpha so it can be found on the Alphas page."""
+        try:
+            self.request("PATCH", f"{API}/alphas/{alpha_id}", json={"name": name, "tags": tags})
+        except Exception:
+            pass
 
     def corr_check(self, alpha_id):
         """Result of the SELF_CORRELATION row of the "Check Submission" test, or None."""
