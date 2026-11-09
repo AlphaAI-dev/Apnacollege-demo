@@ -252,18 +252,22 @@ def main():
     email = os.environ.get("BRAIN_EMAIL") or input("BRAIN email: ")
     password = os.environ.get("BRAIN_PASSWORD") or getpass.getpass("BRAIN password: ")
     brain = Brain(email, password)
+    brain.multi_ok = state.get("multi_ok", True)  # remembered from earlier runs
 
     def sims_today():
         return state["sims_by_day"].get(brain_day(), 0)
 
     log(f"\n--- {datetime.now():%Y-%m-%d %H:%M} start, BRAIN day {brain_day()}, "
         f"{sims_today()}/{args.daily_sims} simulations done today ---")
+    log("Running. Each simulation takes 1-3 minutes, so the first results appear after a few minutes.")
     queued = errors_in_a_row = 0
     running = {}
     try:
         pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENT)  # no 'with': Control+C exits at once
         while running or sims_today() + queued < args.daily_sims:
-            while len(running) < MAX_CONCURRENT and sims_today() + queued < args.daily_sims:
+            # Until we know whether multi-simulation is allowed, send one batch at a time.
+            slots = MAX_CONCURRENT if "multi_ok" in state else 1
+            while len(running) < slots and sims_today() + queued < args.daily_sims:
                 batch = []
                 size = args.batch if brain.multi_ok else 1  # without multi-simulation, 3 singles at a time
                 while len(batch) < min(size, args.daily_sims - sims_today() - queued):
@@ -282,6 +286,8 @@ def main():
             for fut in done:
                 batch = running.pop(fut)
                 queued -= len(batch)
+                if len(batch) > 1:
+                    state["multi_ok"] = brain.multi_ok
                 try:
                     rows = fut.result()
                 except Exception as e:
