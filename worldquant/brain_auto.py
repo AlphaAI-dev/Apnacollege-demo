@@ -258,14 +258,15 @@ def main():
 
     log(f"\n--- {datetime.now():%Y-%m-%d %H:%M} start, BRAIN day {brain_day()}, "
         f"{sims_today()}/{args.daily_sims} simulations done today ---")
-    queued = 0
+    queued = errors_in_a_row = 0
     running = {}
     try:
         pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENT)  # no 'with': Control+C exits at once
         while running or sims_today() + queued < args.daily_sims:
             while len(running) < MAX_CONCURRENT and sims_today() + queued < args.daily_sims:
                 batch = []
-                while len(batch) < min(args.batch, args.daily_sims - sims_today() - queued):
+                size = args.batch if brain.multi_ok else 1  # without multi-simulation, 3 singles at a time
+                while len(batch) < min(size, args.daily_sims - sims_today() - queued):
                     nxt = next_candidate(state, tried)
                     if nxt is None:
                         break
@@ -286,14 +287,18 @@ def main():
                 except Exception as e:
                     rows = [dict(error=f"{type(e).__name__}: {e}")] * len(batch)
                 for (g, code, k, _), row in zip(batch, rows):
-                    state["tried"].append(k)
-                    state["sims_by_day"][brain_day()] = sims_today() + 1
                     if row.get("error"):
-                        log(f"  ERROR {row['error'][:120]}")
+                        # A failed request is not a simulation: don't count it, and allow a retry.
+                        errors_in_a_row += 1
+                        tried.discard(k)
+                        log(f"  ERROR {' '.join(row['error'].split())[:100]}")
                         m = re.search(r'unknown (?:variable|operator) "(\w+)"', row["error"])
                         if m:
                             state["bad_tokens"].append(m.group(1))
                         continue
+                    errors_in_a_row = 0
+                    state["tried"].append(k)
+                    state["sims_by_day"][brain_day()] = sims_today() + 1
                     state["pool"].append(dict(genome=g, row={x: row.get(x) for x in
                                                              ("fitness", "sharpe", "self_corr", "corr_check")}))
                     fit = row["fitness"] or 0
@@ -319,6 +324,10 @@ def main():
                         state["ready"].append(dict(day=brain_day(), fitness=row["fitness"],
                                                    text=details(code, g, row, status)))
                 save_state(state)
+                if errors_in_a_row >= 10:
+                    log("  BRAIN keeps failing (gateway errors); pausing 5 minutes before trying again.")
+                    time.sleep(300)
+                    errors_in_a_row = 0
     except KeyboardInterrupt:
         log("Stopped by Control+C.")
     save_state(state)

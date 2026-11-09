@@ -175,6 +175,7 @@ class Brain:
         self.session = requests.Session()
         self.session.auth = (email, password)
         self.lock = threading.Lock()
+        self.multi_ok = True  # set False once BRAIN says multi-simulation isn't allowed
         self.login()
 
     def login(self):
@@ -193,12 +194,15 @@ class Brain:
         sys.exit(f"Login failed ({r.status_code}): {body}")
 
     def request(self, method, url, **kwargs):
-        """Send a request, re-logging in on 401, waiting out 429s and retrying timeouts."""
+        """Send a request, re-logging in on 401, waiting out 429s, retrying timeouts and 5xx errors."""
         for attempt in range(20):
             try:
                 r = self.session.request(method, url, timeout=120, **kwargs)
             except (requests.Timeout, requests.ConnectionError):
                 time.sleep(min(60, 5 * 2 ** attempt))  # BRAIN is busy; back off and try again
+                continue
+            if r.status_code in (500, 502, 503, 504) and attempt < 8:
+                time.sleep(min(120, 10 * 2 ** attempt))  # gateway errors: BRAIN is overloaded
                 continue
             if r.status_code == 401:
                 with self.lock:
@@ -254,11 +258,15 @@ class Brain:
 
     def simulate_many(self, cands):
         """Run up to 10 candidates as one multi-simulation; falls back to one at a time."""
-        if len(cands) == 1:
-            return [self.simulate(cands[0])]
+        if len(cands) == 1 or not self.multi_ok:
+            return [self.simulate(c) for c in cands]
         r = self.request("POST", f"{API}/simulations", json=[self.payload(c) for c in cands])
         if "Location" not in r.headers:
-            print(f"Multi-simulation refused ({r.status_code}: {r.text[:120]}); running one at a time.")
+            if r.status_code == 403:
+                self.multi_ok = False
+                print("Multi-simulation isn't enabled for this account; running single simulations, 3 at a time.")
+            else:
+                print(f"Multi-simulation failed ({r.status_code}); running this batch one at a time.")
             return [self.simulate(c) for c in cands]
         parent = self.wait(r.headers["Location"]).json()
         children = parent.get("children") or []
