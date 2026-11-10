@@ -250,11 +250,11 @@ class Brain:
                     neutralization=settings["neutralization"], decay=settings["decay"],
                     truncation=settings["truncation"], code=cand["code"])
 
-    def simulate(self, cand):
+    def simulate(self, cand, with_corr=True):
         r = self.request("POST", f"{API}/simulations", json=self.payload(cand))
         if "Location" not in r.headers:
             return {**self.base_row(cand), "error": f"{r.status_code} {r.text[:200]}"}
-        return self.finish(cand, self.wait(r.headers["Location"]).json())
+        return self.finish(cand, self.wait(r.headers["Location"]).json(), with_corr)
 
     def simulate_many(self, cands):
         """Run up to 10 candidates as one multi-simulation; falls back to one at a time."""
@@ -276,8 +276,8 @@ class Brain:
         return [self.finish(c, self.wait(f"{API}/simulations/{child}").json())
                 for c, child in zip(cands, children)]
 
-    def finish(self, cand, result):
-        """Turn a finished simulation into a row of stats."""
+    def finish(self, cand, result, with_corr=True):
+        """Turn a finished simulation into a row of stats (self-correlation only if with_corr)."""
         row = self.base_row(cand)
         if "alpha" not in result:
             return {**row, "error": result.get("message") or result.get("status") or str(result)[:200]}
@@ -297,9 +297,11 @@ class Brain:
             drawdown=round(100 * stats["drawdown"], 2) if stats.get("drawdown") is not None else None,
             failed_checks=" ".join(failed),
             op_count=(alpha.get("regular") or {}).get("operatorCount"),
-            self_corr=self.self_correlation(alpha_id),
+            self_corr=self.self_correlation(alpha_id) if with_corr else None,
         )
         row["rating"] = rating(row["fitness"])
+        if not with_corr:
+            return row
         # Self-correlation above 0.7 still passes when Sharpe beats the correlated alpha
         # by 10%. Only BRAIN's submission check knows that, so ask it for strong alphas.
         if (row["self_corr"] or 0) >= 0.7 and (row["fitness"] or 0) >= 2.0:

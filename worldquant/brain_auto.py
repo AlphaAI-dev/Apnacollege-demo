@@ -4,9 +4,11 @@ Run the day's BRAIN simulations and record every alpha, so nothing gets lost.
 
 Every alpha it builds stays inside the programme rules: at most 4 data fields
 and at most 8 operators (counted conservatively: every function call and every
-+ - * / sign). It runs them in multi-simulations of up to 10, keeps changing the
++ - * / sign). It runs 3 simulations at a time (BRAIN's limit), keeps changing the
 best ones (a part, a window, a weight, the grouping or a setting), and stops
 when today's simulation target is met (default 300, BRAIN day in US Eastern).
+It keeps BRAIN's 3 simulation slots busy all the time: the slow correlation and
+submission checks run separately, so they never hold a slot.
 
 Nothing is submitted. Instead, for every alpha it:
   * names and tags it on BRAIN (e.g. "auto_SPECTACULAR_2.61", tags auto + rating),
@@ -260,12 +262,24 @@ def record_csv(row, g, code, status):
                     s["neutralization"], s["decay"], s["truncation"], code])
 
 
+def analyze(brain, row):
+    """The slow part, run off the simulation slots: self-correlation and Check Submission."""
+    fit = row["fitness"] or 0
+    row["self_corr"] = brain.self_correlation(row["alpha_id"])
+    if (row["self_corr"] or 0) >= 0.7 and fit >= 2.0:
+        row["corr_check"] = brain.corr_check(row["alpha_id"])  # the 10% Sharpe rule
+    if not corr_ok(row):
+        return row, f"FAILS self-correlation {row['self_corr']}"
+    ok, bad = full_check(brain, row["alpha_id"])
+    if not ok:
+        return row, "FAILS " + " ".join(bad)
+    return row, "READY TO SUBMIT" if fit >= 2.0 else "READY TO SUBMIT (backup: Good, not Excellent)"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--daily-sims", type=int, default=300, help="simulations to run today (default 300)")
-    ap.add_argument("--batch", type=int, default=10, help="alphas per multi-simulation (default 10, max 10)")
     args = ap.parse_args()
-    args.batch = max(1, min(10, args.batch))
 
     os.makedirs("results", exist_ok=True)
     state = load_state()
@@ -273,96 +287,93 @@ def main():
     email = os.environ.get("BRAIN_EMAIL") or input("BRAIN email: ")
     password = os.environ.get("BRAIN_PASSWORD") or getpass.getpass("BRAIN password: ")
     brain = Brain(email, password)
-    brain.multi_ok = state.get("multi_ok", True)  # remembered from earlier runs
 
     def sims_today():
         return state["sims_by_day"].get(brain_day(), 0)
 
+    def finalize(g, code, row, status):
+        state["pool"].append(dict(genome=g, row={x: row.get(x) for x in
+                                                 ("fitness", "sharpe", "self_corr", "corr_check")}))
+        fit = row["fitness"] or 0
+        pair = pair_of(g)
+        if fit >= 1.5 and (row.get("self_corr") or 0) >= 0.9:
+            state["hot"][pair] = state["hot"].get(pair, 0) + 1
+        if (state["hot"].get(pair, 0) >= 2 or status.startswith("READY")) and pair not in state["blocked"]:
+            state["blocked"].append(pair)
+            log(f"  (no more {pair} alphas: {'one is ready' if status.startswith('READY') else 'too close to submitted alphas'})")
+        brain.tag(row["alpha_id"], f"auto_{row['rating'].upper().replace(' ', '_')}_{row['fitness']}",
+                  ["auto", row["rating"].lower().replace(" ", "_")])
+        record_csv(row, g, code, status)
+        log(f"  [{sims_today():>3}/{args.daily_sims}] {row['rating']:<13} fitness {row['fitness']}  "
+            f"sharpe {row['sharpe']}  self-corr {row.get('self_corr')}  {row['alpha_id']}  {status}")
+        if fit >= 1.6:  # full code and settings for Good and better
+            log(details(code, g, row, status), EXCELLENT_FILE)
+        if status.startswith("READY"):
+            state["ready"].append(dict(day=brain_day(), fitness=row["fitness"], text=details(code, g, row, status)))
+        save_state(state)
+
     log(f"\n--- {datetime.now():%Y-%m-%d %H:%M} start, BRAIN day {brain_day()}, "
         f"{sims_today()}/{args.daily_sims} simulations done today ---")
-    log("Running. Each simulation takes 1-3 minutes, so the first results appear after a few minutes.")
-    queued = errors_in_a_row = 0
-    running = {}
+    log(f"Running {MAX_CONCURRENT} simulations at a time (BRAIN's limit). Each takes 1-3 minutes.")
+    # Simulations hold BRAIN's 3 slots only while simulating; correlation and submission
+    # checks for promising alphas run separately, so a new simulation starts at once.
+    sim_pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENT)  # no 'with': Control+C exits at once
+    check_pool = ThreadPoolExecutor(max_workers=6)
+    sims, checks, checks_row = {}, {}, {}
+    errors_in_a_row = 0
     try:
-        pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENT)  # no 'with': Control+C exits at once
-        while running or sims_today() + queued < args.daily_sims:
-            # Until we know whether multi-simulation is allowed, send one batch at a time.
-            slots = MAX_CONCURRENT if "multi_ok" in state else 1
-            while len(running) < slots and sims_today() + queued < args.daily_sims:
-                batch = []
-                size = args.batch if brain.multi_ok else 1  # without multi-simulation, 3 singles at a time
-                while len(batch) < min(size, args.daily_sims - sims_today() - queued):
-                    nxt = next_candidate(state, tried)
-                    if nxt is None:
-                        break
-                    g, code, k = nxt
-                    batch.append((g, code, k, dict(name="auto", code=code, **g["settings"])))
-                if not batch:
+        while sims or checks or sims_today() + len(sims) < args.daily_sims:
+            while len(sims) < MAX_CONCURRENT and sims_today() + len(sims) < args.daily_sims:
+                nxt = next_candidate(state, tried)
+                if nxt is None:
                     break
-                running[pool.submit(brain.simulate_many, [b[3] for b in batch])] = batch
-                queued += len(batch)
-            if not running:
+                g, code, k = nxt
+                cand = dict(name="auto", code=code, **g["settings"])
+                sims[sim_pool.submit(brain.simulate, cand, False)] = (g, code, k)
+            if not sims and not checks:
                 break
-            done, _ = wait(running, return_when=FIRST_COMPLETED)
+            done, _ = wait(list(sims) + list(checks), return_when=FIRST_COMPLETED)
             for fut in done:
-                batch = running.pop(fut)
-                queued -= len(batch)
-                if len(batch) > 1:
-                    state["multi_ok"] = brain.multi_ok
+                if fut in checks:
+                    g, code = checks.pop(fut)
+                    try:
+                        row, status = fut.result()
+                    except Exception as e:
+                        row, status = checks_row[fut], f"CHECK ERROR {type(e).__name__}"
+                    finalize(g, code, row, status)
+                    continue
+                g, code, k = sims.pop(fut)
                 try:
-                    rows = fut.result()
+                    row = fut.result()
                 except Exception as e:
-                    rows = [dict(error=f"{type(e).__name__}: {e}")] * len(batch)
-                for (g, code, k, _), row in zip(batch, rows):
-                    if row.get("error"):
-                        # A failed request is not a simulation: don't count it, and allow a retry.
-                        errors_in_a_row += 1
-                        tried.discard(k)
-                        log(f"  ERROR {' '.join(row['error'].split())[:100]}")
-                        m = re.search(r'unknown (?:variable|operator) "(\w+)"', row["error"])
-                        if m:
-                            state["bad_tokens"].append(m.group(1))
-                        continue
-                    errors_in_a_row = 0
-                    state["tried"].append(k)
-                    state["sims_by_day"][brain_day()] = sims_today() + 1
-                    state["pool"].append(dict(genome=g, row={x: row.get(x) for x in
-                                                             ("fitness", "sharpe", "self_corr", "corr_check")}))
-                    fit = row["fitness"] or 0
-                    if (row.get("op_count") or 0) > MAX_OPS:
-                        status = f"NOT ALLOWED: {row['op_count']} operators"
-                    elif fit < 1.6:
-                        status = "below Good"
-                    elif row.get("failed_checks"):
-                        status = "FAILS " + row["failed_checks"]
-                    elif not corr_ok(row):
-                        status = f"FAILS self-correlation {row['self_corr']}"
-                    else:
-                        ok, bad = full_check(brain, row["alpha_id"])
-                        status = "READY TO SUBMIT" if ok else "FAILS " + " ".join(bad)
-                        if ok and fit < 2.0:
-                            status = "READY TO SUBMIT (backup: Good, not Excellent)"
-                    pair = pair_of(g)
-                    if fit >= 1.5 and (row.get("self_corr") or 0) >= 0.9:
-                        state["hot"][pair] = state["hot"].get(pair, 0) + 1
-                    if (state["hot"].get(pair, 0) >= 2 or status.startswith("READY")) and pair not in state["blocked"]:
-                        state["blocked"].append(pair)
-                        log(f"  (no more {pair} alphas: {'one is ready' if status.startswith('READY') else 'too close to submitted alphas'})")
-                    brain.tag(row["alpha_id"], f"auto_{row['rating'].upper().replace(' ', '_')}_{row['fitness']}",
-                              ["auto", row["rating"].lower().replace(" ", "_")])
-                    record_csv(row, g, code, status)
-                    log(f"  [{sims_today():>3}/{args.daily_sims}] {row['rating']:<13} fitness {row['fitness']}  "
-                        f"sharpe {row['sharpe']}  self-corr {row.get('self_corr')}  {row['alpha_id']}  {status}")
-                    if fit >= 1.6:  # full code and settings for Good and better
-                        log(details(code, g, row, status), EXCELLENT_FILE)
-                    if status.startswith("READY"):
-                        state["ready"].append(dict(day=brain_day(), fitness=row["fitness"],
-                                                   text=details(code, g, row, status)))
-                save_state(state)
-                if errors_in_a_row >= 10:
-                    log("  BRAIN keeps failing (gateway errors); pausing 5 minutes before trying again.")
-                    time.sleep(300)
-                    errors_in_a_row = 0
+                    row = dict(error=f"{type(e).__name__}: {e}")
+                if row.get("error"):
+                    # A failed request is not a simulation: don't count it, and allow a retry.
+                    errors_in_a_row += 1
+                    tried.discard(k)
+                    log(f"  ERROR {' '.join(row['error'].split())[:100]}")
+                    m = re.search(r'unknown (?:variable|operator) "(\w+)"', row["error"])
+                    if m:
+                        state["bad_tokens"].append(m.group(1))
+                    continue
+                errors_in_a_row = 0
+                state["tried"].append(k)
+                state["sims_by_day"][brain_day()] = sims_today() + 1
+                fit = row["fitness"] or 0
+                if (row.get("op_count") or 0) > MAX_OPS:
+                    finalize(g, code, row, f"NOT ALLOWED: {row['op_count']} operators")
+                elif fit < 1.6:
+                    finalize(g, code, row, "below Good")
+                elif row.get("failed_checks"):
+                    finalize(g, code, row, "FAILS " + row["failed_checks"])
+                else:
+                    cf = check_pool.submit(analyze, brain, row)
+                    checks[cf] = (g, code)
+                    checks_row[cf] = row
+            if errors_in_a_row >= 10:
+                log("  BRAIN keeps failing (gateway errors); pausing 5 minutes before trying again.")
+                time.sleep(300)
+                errors_in_a_row = 0
     except KeyboardInterrupt:
         log("Stopped by Control+C.")
     save_state(state)
@@ -374,7 +385,7 @@ def main():
                 "once one is submitted, the others are compared with it too.\n\n"
                 + "\n".join(r["text"] for r in ready))
     log(f"--- done: {sims_today()}/{args.daily_sims} simulations today, {len(ready)} ready to submit "
-        f"(see {READY_FILE}); every Excellent+ alpha is in {EXCELLENT_FILE}, every alpha in {CSV_FILE} ---")
+        f"(see {READY_FILE}); every Good+ alpha is in {EXCELLENT_FILE}, every alpha in {CSV_FILE} ---")
 
 
 if __name__ == "__main__":
