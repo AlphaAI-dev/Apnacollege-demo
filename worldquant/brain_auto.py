@@ -19,7 +19,7 @@ Nothing is submitted. Instead, for every alpha it:
 At the end, results/ready_to_submit.txt lists the ones that passed BRAIN's own
 Check Submission (every row green, self-correlation included), best first. Good
 alphas (fitness 1.6-2.0) that pass are listed too, as backups so a day with no
-Excellent one still gets a submission. Pairs of parts that are already submitted,
+Excellent one still gets a submission (Good/Average from fitness 1.3, Sharpe 1.25). Pairs of parts that are already submitted,
 or keep failing self-correlation, are skipped so simulations aren't wasted.
 
 Usage:
@@ -48,6 +48,10 @@ CSV_FILE = "results/all_alphas.csv"
 EXCELLENT_FILE = "results/excellent_alphas.txt"
 READY_FILE = "results/ready_to_submit.txt"
 MAX_FIELDS, MAX_OPS = 4, 8
+# Alphas from this fitness up (with Sharpe 1.25+, BRAIN's own minimum) are checked, so a
+# day with no Excellent alpha still has something submittable: a submission keeps the
+# weekly baseline, and low-correlation ones help the Low-Corr Sprint.
+BACKUP_FITNESS = 1.3
 
 # Each part is one small expression with at most 2 data fields and 2 operators, so
 # two parts plus the combining "group_rank(..) + w * group_rank(..)" stay within
@@ -63,6 +67,11 @@ PARTS = {
     "stab":   dict(expr="-ts_std_dev(scl12_buzz, {d})", d=[5, 10, 20]),
     "lowvol": dict(expr="-ts_std_dev(returns, {d})", d=[63, 126, 252]),
     "salesy": dict(expr="{op}(sales / cap, {d})", op=["ts_rank", "ts_zscore"], d=[126, 252]),
+    # New families with no overlap with the submitted valuation/yield/vol alphas.
+    "pv":     dict(expr="-ts_corr(close, volume, {d})", d=[10, 20, 60]),
+    "mom":    dict(expr="ts_sum(returns, {d})", d=[63, 126, 252]),
+    "rev":    dict(expr="-ts_delta(close, {d})", d=[3, 5, 10]),
+    "ey":     dict(expr="{op}(est_eps / close, {d})", op=["ts_rank", "ts_zscore"], d=[63, 252]),
 }
 GROUPS = ["industry", "sector", "subindustry"]
 WEIGHTS = [0.5, 0.75, 1, 1.5, 2]
@@ -92,6 +101,10 @@ SEEDS = [
     genome(part("skew"), part("stab"), w=0.5, neutralization="SECTOR"),
     genome(part("fcf"), part("lev"), w=0.75, neutralization="SUBINDUSTRY"),
     genome(part("salesy", d=252), part("val", d=252), w=1),
+    genome(part("pv", d=20), part("oey", d=252), w=1, decay=6),
+    genome(part("ey", d=252), part("lowvol", d=252), w=0.75, grp="sector", neutralization="SECTOR"),
+    genome(part("mom", d=252), part("skew"), w=0.5, neutralization="MARKET", decay=6),
+    genome(part("rev", d=5), part("stab"), w=0.5, universe="TOP1000", decay=8),
     genome(part("vr"), part("val", d=252), w=1.5),
     genome(part("oey", d=252), part("stab"), w=0.5, neutralization="SECTOR"),
     genome(part("val", d=252), part("lev"), w=0.5, neutralization="SUBINDUSTRY"),
@@ -273,7 +286,9 @@ def analyze(brain, row):
     ok, bad = full_check(brain, row["alpha_id"])
     if not ok:
         return row, "FAILS " + " ".join(bad)
-    return row, "READY TO SUBMIT" if fit >= 2.0 else "READY TO SUBMIT (backup: Good, not Excellent)"
+    if fit >= 2.0:
+        return row, "READY TO SUBMIT"
+    return row, f"READY TO SUBMIT (backup: {row['rating']}, not Excellent)"
 
 
 def main():
@@ -362,8 +377,8 @@ def main():
                 fit = row["fitness"] or 0
                 if (row.get("op_count") or 0) > MAX_OPS:
                     finalize(g, code, row, f"NOT ALLOWED: {row['op_count']} operators")
-                elif fit < 1.6:
-                    finalize(g, code, row, "below Good")
+                elif fit < BACKUP_FITNESS or (row["sharpe"] or 0) < 1.25:
+                    finalize(g, code, row, "too weak to submit")
                 elif row.get("failed_checks"):
                     finalize(g, code, row, "FAILS " + row["failed_checks"])
                 else:
