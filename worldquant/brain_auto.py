@@ -15,7 +15,10 @@ Nothing is submitted. Instead, for every alpha it:
   * adds Excellent and Spectacular ones to results/excellent_alphas.txt with full
     settings and code, marked READY or with the reason they can't be submitted.
 At the end, results/ready_to_submit.txt lists the ones that passed BRAIN's own
-Check Submission (every row green, self-correlation included), best first.
+Check Submission (every row green, self-correlation included), best first. Good
+alphas (fitness 1.6-2.0) that pass are listed too, as backups so a day with no
+Excellent one still gets a submission. Pairs of parts that are already submitted,
+or keep failing self-correlation, are skipped so simulations aren't wasted.
 
 Usage:
     python3 brain_auto.py                   # 300 simulations today
@@ -80,11 +83,13 @@ def genome(p1, p2=None, w=1, grp="industry", **settings):
 
 # Starting points: the pairs behind the Excellent/Spectacular alphas from October,
 # rebuilt to fit the 4-field / 8-operator limits, plus a few untried pairs.
+# vr + oey (78LAxOA1) and val + oey (mLovdwX9) are submitted, so they start out blocked.
 SEEDS = [
-    genome(part("vr"), part("oey", d=252), w=1.5, universe="TOP200"),
-    genome(part("vr"), part("oey", d=252), w=1, neutralization="MARKET"),
-    genome(part("val", d=252), part("oey", d=252), w=0.75),
     genome(part("skew"), part("fcf"), w=1, neutralization="MARKET"),
+    genome(part("vr"), part("lowvol", d=126), w=0.5),
+    genome(part("skew"), part("stab"), w=0.5, neutralization="SECTOR"),
+    genome(part("fcf"), part("lev"), w=0.75, neutralization="SUBINDUSTRY"),
+    genome(part("salesy", d=252), part("val", d=252), w=1),
     genome(part("vr"), part("val", d=252), w=1.5),
     genome(part("oey", d=252), part("stab"), w=0.5, neutralization="SECTOR"),
     genome(part("val", d=252), part("lev"), w=0.5, neutralization="SUBINDUSTRY"),
@@ -140,6 +145,16 @@ def mutate(g):
     return g
 
 
+def pair_of(g):
+    """The two parts an alpha combines, e.g. "oey+val"."""
+    return "+".join(sorted([g["p1"][0], (g["p2"] or ["-"])[0]]))
+
+
+# A pair is blocked once it is submitted, has a ready alpha, or keeps producing alphas
+# that are 0.9+ correlated with submitted ones: more of it can only fail self-correlation.
+ALREADY_SUBMITTED = ["oey+vr", "oey+val"]
+
+
 def brain_day():
     return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
@@ -147,8 +162,12 @@ def brain_day():
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE) as f:
-            return json.load(f)
-    return dict(tried=[], pool=[], bad_tokens=[], sims_by_day={}, ready=[])
+            state = json.load(f)
+    else:
+        state = dict(tried=[], pool=[], bad_tokens=[], sims_by_day={}, ready=[])
+    state.setdefault("blocked", list(ALREADY_SUBMITTED))
+    state.setdefault("hot", {})
+    return state
 
 
 def save_state(state):
@@ -185,6 +204,8 @@ def next_candidate(state, tried):
     bad = set(state["bad_tokens"])
     for _ in range(500):
         g = mutate(pick_parent(state))
+        if pair_of(g) in state["blocked"]:
+            continue
         code = build(g)
         fields, ops = count_fields_ops(code)
         if fields > MAX_FIELDS or ops > MAX_OPS:
@@ -310,8 +331,8 @@ def main():
                     fit = row["fitness"] or 0
                     if (row.get("op_count") or 0) > MAX_OPS:
                         status = f"NOT ALLOWED: {row['op_count']} operators"
-                    elif fit < 2.0:
-                        status = "below Excellent"
+                    elif fit < 1.6:
+                        status = "below Good"
                     elif row.get("failed_checks"):
                         status = "FAILS " + row["failed_checks"]
                     elif not corr_ok(row):
@@ -319,6 +340,14 @@ def main():
                     else:
                         ok, bad = full_check(brain, row["alpha_id"])
                         status = "READY TO SUBMIT" if ok else "FAILS " + " ".join(bad)
+                        if ok and fit < 2.0:
+                            status = "READY TO SUBMIT (backup: Good, not Excellent)"
+                    pair = pair_of(g)
+                    if fit >= 1.5 and (row.get("self_corr") or 0) >= 0.9:
+                        state["hot"][pair] = state["hot"].get(pair, 0) + 1
+                    if (state["hot"].get(pair, 0) >= 2 or status.startswith("READY")) and pair not in state["blocked"]:
+                        state["blocked"].append(pair)
+                        log(f"  (no more {pair} alphas: {'one is ready' if status.startswith('READY') else 'too close to submitted alphas'})")
                     brain.tag(row["alpha_id"], f"auto_{row['rating'].upper().replace(' ', '_')}_{row['fitness']}",
                               ["auto", row["rating"].lower().replace(" ", "_")])
                     record_csv(row, g, code, status)
@@ -326,7 +355,7 @@ def main():
                         f"sharpe {row['sharpe']}  self-corr {row.get('self_corr')}  {row['alpha_id']}  {status}")
                     if fit >= 2.0:
                         log(details(code, g, row, status), EXCELLENT_FILE)
-                    if status == "READY TO SUBMIT":
+                    if status.startswith("READY"):
                         state["ready"].append(dict(day=brain_day(), fitness=row["fitness"],
                                                    text=details(code, g, row, status)))
                 save_state(state)
