@@ -353,7 +353,7 @@ def main():
                     record_csv(row, g, code, status)
                     log(f"  [{sims_today():>3}/{args.daily_sims}] {row['rating']:<13} fitness {row['fitness']}  "
                         f"sharpe {row['sharpe']}  self-corr {row.get('self_corr')}  {row['alpha_id']}  {status}")
-                    if fit >= 2.0:
+                    if fit >= 1.6:  # full code and settings for Good and better
                         log(details(code, g, row, status), EXCELLENT_FILE)
                     if status.startswith("READY"):
                         state["ready"].append(dict(day=brain_day(), fitness=row["fitness"],
