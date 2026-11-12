@@ -210,6 +210,13 @@ def mutate(g, catalogs):
 
 # ---------------------------------------------------------------- state & output
 
+# Fields that are already the main idea of several submitted alphas (mLovdwX9, KPg3blVp,
+# 78LpvnO5, ...). Reusing them only makes "the same expression as an addition", which
+# the WorldQuant session said lowers an alpha's value, and raises production correlation.
+ALREADY_SUBMITTED_FIELDS = ["USA:operating_income", "USA:cashflow_op", "USA:liabilities",
+                            "USA:enterprise_value", "USA:assets"]
+
+
 def brain_day():
     return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
@@ -222,6 +229,9 @@ def load_state():
     for key, default in dict(tried=[], pool=[], bad_tokens=[], sims_by_day={}, ready=[], blocked=[],
                              hot={}, ready_by_ds={}, flips=[]).items():
         state.setdefault(key, default)
+    for key in ALREADY_SUBMITTED_FIELDS:
+        if key not in state["blocked"]:
+            state["blocked"].append(key)
     return state
 
 
