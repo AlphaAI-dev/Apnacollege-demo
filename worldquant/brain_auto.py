@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
 """
-Run the day's BRAIN simulations and record every alpha, so nothing gets lost.
+Run the day's BRAIN simulations as "atom" alphas, and record every one.
 
-Every alpha it builds stays inside the programme rules: at most 4 data fields
-and at most 8 operators (counted conservatively: every function call and every
-+ - * / sign). It runs 3 simulations at a time (BRAIN's limit), keeps changing the
-best ones (a part, a window, a weight, the grouping or a setting), and stops
-when today's simulation target is met (default 300, BRAIN day in US Eastern).
-It keeps BRAIN's 3 simulation slots busy all the time: the slow correlation and
-submission checks run separately, so they never hold a slot.
+Built around the guidance from WorldQuant's own sessions:
+  * one dataset and one idea per alpha (atom alphas), spread across many
+    datasets so submissions fill more pyramids (dataset category x region);
+  * low production correlation: prefer fields few other researchers use, and
+    techniques that strip out common risk: vector neutralization against size,
+    custom group neutralization, residuals against the group median, and an
+    entry condition (trade_when) that only trades when it makes sense;
+  * turnover under 25% without heavy decay (decay is kept at 8 or below);
+  * the programme rules: at most 4 data fields and 8 operators (counted
+    conservatively: every function, every + - * / < > sign).
 
-Nothing is submitted. Instead, for every alpha it:
-  * names and tags it on BRAIN (e.g. "auto_SPECTACULAR_2.61", tags auto + rating),
-    so the Alphas page can filter by name to find it;
-  * adds a line to results/all_alphas.csv (link, scores, settings, code, status);
-  * adds Excellent and Spectacular ones to results/excellent_alphas.txt with full
-    settings and code, marked READY or with the reason they can't be submitted.
-At the end, results/ready_to_submit.txt lists the ones that passed BRAIN's own
-Check Submission (every row green, self-correlation included), best first. Good
-alphas (fitness 1.6-2.0) that pass are listed too, as backups so a day with no
-Excellent one still gets a submission (Good/Average from fitness 1.3, Sharpe 1.25). Pairs of parts that are already submitted,
-or keep failing self-correlation, are skipped so simulations aren't wasted.
+The dataset and field list comes from BRAIN's data catalog for your account and
+is cached in results/ for a week. An alpha whose Sharpe comes out strongly
+negative is re-run with its sign flipped, since the opposite bet is then good.
+
+It runs 3 simulations at a time (BRAIN's limit) until today's target is met
+(default 300; BRAIN day in US Eastern). Nothing is submitted. Every alpha is
+named/tagged on BRAIN, written to results/all_alphas.csv, Good+ ones go to
+results/excellent_alphas.txt, and results/ready_to_submit.txt lists the ones that
+passed BRAIN's Check Submission, best first, one per dataset at the top.
 
 Usage:
-    python3 brain_auto.py                   # 300 simulations today
-    python3 brain_auto.py --daily-sims 500
+    python3 brain_auto.py                         # USA, 300 simulations today
+    python3 brain_auto.py --daily-sims 500 --regions USA,GLB
 Stop any time with Control+C; a rerun the same day continues towards the target.
 """
 import argparse
@@ -40,148 +41,187 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from brain_search import MAX_CONCURRENT, Brain, rating
+from brain_search import API, MAX_CONCURRENT, Brain, rating
 
-STATE_FILE = "results/auto_state_v2.json"
+STATE_FILE = "results/auto_state_v3.json"
 LOG_FILE = "results/auto_log.txt"
 CSV_FILE = "results/all_alphas.csv"
 EXCELLENT_FILE = "results/excellent_alphas.txt"
 READY_FILE = "results/ready_to_submit.txt"
 MAX_FIELDS, MAX_OPS = 4, 8
-# Alphas from this fitness up (with Sharpe 1.25+, BRAIN's own minimum) are checked, so a
-# day with no Excellent alpha still has something submittable: a submission keeps the
-# weekly baseline, and low-correlation ones help the Low-Corr Sprint.
-BACKUP_FITNESS = 1.3
+BACKUP_FITNESS = 1.3   # BRAIN's own minimums are fitness 1.0 and Sharpe 1.25
+MAX_TURNOVER = 25      # percent; the session's advice for production alphas
 
-# Each part is one small expression with at most 2 data fields and 2 operators, so
-# two parts plus the combining "group_rank(..) + w * group_rank(..)" stay within
-# 4 fields and 8 operators. Every field here has already run on this account.
-PARTS = {
-    "vr":     dict(expr="ts_mean(implied_volatility_call_120 / parkinson_volatility_120, {d})", d=[5, 10, 20]),
-    "val":    dict(expr="{op}(cashflow_op / enterprise_value, {d})", op=["ts_rank", "ts_zscore"], d=[126, 252, 504]),
-    "oey":    dict(expr="{op}(operating_income / cap, {d})", op=["ts_rank", "ts_zscore"], d=[126, 252, 504]),
-    "lev":    dict(expr="ts_rank(liabilities / assets, {d})", d=[126, 252]),
-    "fcf":    dict(expr="ts_rank(est_cashflow_op - est_capex, {d})", d=[126, 252]),
-    "skew":   dict(expr="ts_mean(implied_volatility_call_180 - implied_volatility_put_180, {d})", d=[5, 10, 20]),
-    "ovp":    dict(expr="-ts_corr(est_ptp, est_fcf, {d})", d=[63, 126]),
-    "stab":   dict(expr="-ts_std_dev(scl12_buzz, {d})", d=[5, 10, 20]),
-    "lowvol": dict(expr="-ts_std_dev(returns, {d})", d=[63, 126, 252]),
-    "salesy": dict(expr="{op}(sales / cap, {d})", op=["ts_rank", "ts_zscore"], d=[126, 252]),
-    # New families with no overlap with the submitted valuation/yield/vol alphas.
-    "pv":     dict(expr="-ts_corr(close, volume, {d})", d=[10, 20, 60]),
-    "mom":    dict(expr="ts_sum(returns, {d})", d=[63, 126, 252]),
-    "rev":    dict(expr="-ts_delta(close, {d})", d=[3, 5, 10]),
-    "ey":     dict(expr="{op}(est_eps / close, {d})", op=["ts_rank", "ts_zscore"], d=[63, 252]),
+UNIVERSES = {"USA": ["TOP3000", "TOP1000", "TOP500", "TOP200"], "GLB": ["TOP3000", "MINVOL1M"]}
+GROUPS = ["industry", "subindustry", "sector"]
+WINDOWS = [20, 63, 126, 252]
+DECAYS = [0, 2, 4, 6, 8]
+TRUNCATIONS = [0.05, 0.08]
+NEUTRALIZATIONS = ["MARKET", "SECTOR", "INDUSTRY", "SUBINDUSTRY"]
+# The neutralization the course docs suggest for each kind of data.
+NEUT_BY_CATEGORY = {"fundamental": "INDUSTRY", "analyst": "INDUSTRY", "earnings": "INDUSTRY",
+                    "option": "SECTOR", "pv": "MARKET", "price volume": "MARKET", "news": "SUBINDUSTRY",
+                    "sentiment": "SUBINDUSTRY", "socialmedia": "SUBINDUSTRY", "model": "INDUSTRY"}
+
+# One idea per template; X and Y always come from the same dataset.
+TEMPLATES = {
+    "rank":  "group_rank(ts_rank({X}, {d}), {G})",
+    "zscore": "group_rank(ts_zscore({X}, {d}), {G})",
+    "change": "group_rank(ts_delta({X}, {d}), {G})",
+    # How far the stock is from its group's median over time (from the WorldQuant session).
+    "resid": "group_rank(ts_regression({X}, group_median({X}, {G}), {d}), {G})",
+    "ratio": "group_rank(ts_rank({X} / {Y}, {d}), {G})",
+    # Remove the part explained by company size.
+    "vecneut": "vector_neut(group_rank(ts_rank({X}, {d}), {G}), rank(cap))",
+    # Only trade the more volatile stocks (entry condition), hold otherwise.
+    "entry": "trade_when(ts_rank(ts_std_dev(returns, 22), 252) > 0.3, group_rank(ts_rank({X}, {d}), {G}), -1)",
+    # Neutralize within size buckets instead of a standard group.
+    "sizeneut": 'group_neutralize(ts_rank({X}, {d}), densify(bucket(rank(cap), range="0.1,1,0.1")))',
 }
-GROUPS = ["industry", "sector", "subindustry"]
-WEIGHTS = [0.5, 0.75, 1, 1.5, 2]
-SETTING_CHOICES = dict(universe=["TOP200", "TOP500", "TOP1000", "TOP3000"],
-                       neutralization=["MARKET", "SECTOR", "INDUSTRY", "SUBINDUSTRY"],
-                       decay=[2, 3, 4, 6, 8], truncation=[0.05, 0.08])
-GROUP_WORDS = {"industry", "sector", "subindustry", "market"}
+
+# Used only if BRAIN's data catalog can't be read: fields that already ran on this account.
+FALLBACK_CATALOG = {
+    "fundamental6": ("fundamental", ["operating_income", "sales", "cashflow_op", "enterprise_value",
+                                     "liabilities", "assets"]),
+    "analyst4": ("analyst", ["est_eps", "est_fcf", "est_ptp", "est_cashflow_op", "est_capex"]),
+    "socialmedia12": ("sentiment", ["scl12_buzz"]),
+    "option8": ("option", ["implied_volatility_call_120", "parkinson_volatility_120",
+                           "implied_volatility_call_180", "implied_volatility_put_180"]),
+}
 
 
-def part(name, **params):
-    p = {k: v[0] for k, v in PARTS[name].items() if k != "expr"}
-    p.update(params)
-    return [name, p]
+# ---------------------------------------------------------------- data catalog
+
+def pages(brain, path, params, max_items):
+    out, offset = [], 0
+    while offset < max_items:
+        r = brain.request("GET", f"{API}/{path}", params={**params, "limit": 50, "offset": offset})
+        if not r.ok:
+            break
+        batch = r.json().get("results", [])
+        out += batch
+        if len(batch) < 50:
+            break
+        offset += 50
+    return out
 
 
-def genome(p1, p2=None, w=1, grp="industry", **settings):
-    base = dict(universe="TOP500", neutralization="INDUSTRY", decay=4, truncation=0.05)
-    return dict(p1=p1, p2=p2, w=w, grp=grp, settings={**base, **settings})
+def load_catalog(brain, region, universe):
+    """{dataset_id: {"category": str, "fields": [{"id", "cov", "alphas"}]}} for one region."""
+    path = f"results/fields_{region}_{universe}.json"
+    if os.path.exists(path) and time.time() - os.path.getmtime(path) < 7 * 86400:
+        with open(path) as f:
+            return json.load(f)
+    log(f"Reading BRAIN's data catalog for {region} {universe} (first run of the week takes a few minutes)...")
+    base = dict(instrumentType="EQUITY", region=region, delay=1, universe=universe)
+    catalog = {}
+    try:
+        for ds in pages(brain, "data-sets", base, 400):
+            fields = pages(brain, "data-fields", {**base, "dataset.id": ds["id"]}, 300)
+            keep = [dict(id=f["id"], cov=f.get("coverage") or 0, alphas=f.get("alphaCount") or 0)
+                    for f in fields if f.get("type", "MATRIX") == "MATRIX" and (f.get("coverage") or 0) >= 0.5]
+            if keep:
+                cat = (ds.get("category") or {}).get("id") or (ds.get("category") or {}).get("name") or "other"
+                catalog[ds["id"]] = dict(category=str(cat).lower(), fields=keep)
+    except Exception as e:
+        log(f"  Couldn't read the catalog ({type(e).__name__}); using the built-in field list.")
+    if not catalog:
+        catalog = {ds: dict(category=cat, fields=[dict(id=f, cov=1, alphas=0) for f in fields])
+                   for ds, (cat, fields) in FALLBACK_CATALOG.items()}
+    else:
+        log(f"  {len(catalog)} datasets, {sum(len(v['fields']) for v in catalog.values())} usable fields.")
+    with open(path, "w") as f:
+        json.dump(catalog, f)
+    return catalog
 
 
-# Starting points: the pairs behind the Excellent/Spectacular alphas from October,
-# rebuilt to fit the 4-field / 8-operator limits, plus a few untried pairs.
-# vr + oey (78LAxOA1) and val + oey (mLovdwX9) are submitted, so they start out blocked.
-SEEDS = [
-    genome(part("skew"), part("fcf"), w=1, neutralization="MARKET"),
-    genome(part("vr"), part("lowvol", d=126), w=0.5),
-    genome(part("skew"), part("stab"), w=0.5, neutralization="SECTOR"),
-    genome(part("fcf"), part("lev"), w=0.75, neutralization="SUBINDUSTRY"),
-    genome(part("salesy", d=252), part("val", d=252), w=1),
-    genome(part("pv", d=20), part("oey", d=252), w=1, decay=6),
-    genome(part("ey", d=252), part("lowvol", d=252), w=0.75, grp="sector", neutralization="SECTOR"),
-    genome(part("mom", d=252), part("skew"), w=0.5, neutralization="MARKET", decay=6),
-    genome(part("rev", d=5), part("stab"), w=0.5, universe="TOP1000", decay=8),
-    genome(part("vr"), part("val", d=252), w=1.5),
-    genome(part("oey", d=252), part("stab"), w=0.5, neutralization="SECTOR"),
-    genome(part("val", d=252), part("lev"), w=0.5, neutralization="SUBINDUSTRY"),
-    genome(part("lowvol", d=252), part("oey", d=252), w=1, grp="sector", neutralization="SECTOR"),
-    genome(part("ovp"), part("val", d=252), w=1),
-    genome(part("salesy", d=252), part("stab"), w=0.5),
-]
-
+# ---------------------------------------------------------------- alphas
 
 def build(g):
-    def expr(p):
-        name, params = p
-        return PARTS[name]["expr"].format(**params)
-    first = f"group_rank({expr(g['p1'])}, {g['grp']})"
-    if not g["p2"]:
-        return first
-    second = f"group_rank({expr(g['p2'])}, {g['grp']})"
-    return f"{first} + {second}" if g["w"] == 1 else f"{first} + {g['w']} * {second}"
+    def field(name):
+        return f"ts_backfill({name}, 60)" if g["bf"] else name
+    core = TEMPLATES[g["tpl"]].format(X=field(g["x"]), Y=field(g["y"]) if g.get("y") else "", d=g["d"], G=g["grp"])
+    return core if g["sign"] > 0 else f"-{core}"
 
 
 def count_fields_ops(code):
-    """(data fields, operators) — operators counted conservatively."""
-    calls = re.findall(r"\b[a-z_][a-z0-9_]*(?=\s*\()", code)
-    names = set(re.findall(r"\b[a-z_][a-z0-9_]*\b(?!\s*\()", code))
-    fields = {n for n in names if n not in GROUP_WORDS}
-    signs = len(re.findall(r"[-+*/]", code))
-    return len(fields), len(calls) + signs
+    """(data fields, operators); operators counted conservatively."""
+    body = re.sub(r'"[^"]*"', "", code)                 # bucket ranges
+    body = re.sub(r"\b[a-z_]+\s*=", "", body)            # keyword arguments
+    calls = re.findall(r"\b[a-z_][a-z0-9_]*(?=\s*\()", body)
+    names = set(re.findall(r"\b[a-z_][a-z0-9_]*\b(?!\s*\()", body))
+    fields = names - set(GROUPS) - {"market"}
+    return len(fields), len(calls) + len(re.findall(r"[-+*/<>]", body))
 
 
-def mutate(g):
+def pick_field(fields):
+    """Prefer well-covered fields that few alphas use: lower production correlation."""
+    weights = [f["cov"] / (1 + f["alphas"] / 50) for f in fields]
+    return random.choices(fields, weights=weights or None)[0]["id"]
+
+
+def new_atom(state, catalogs, regions):
+    region = random.choice(regions)
+    universe, catalog = catalogs[region]
+    # Datasets with fewer ready alphas so far get more turns: more pyramids, more diversity.
+    ds_ids = list(catalog)
+    weights = [1 / (1 + state["ready_by_ds"].get(ds, 0)) for ds in ds_ids]
+    ds = random.choices(ds_ids, weights=weights)[0]
+    fields = catalog[ds]["fields"]
+    tpl = random.choice(list(TEMPLATES)) if len(fields) > 1 else random.choice(
+        [t for t in TEMPLATES if t != "ratio"])
+    x = pick_field(fields)
+    y = pick_field([f for f in fields if f["id"] != x]) if tpl == "ratio" else None
+    category = catalog[ds]["category"]
+    return dict(region=region, ds=ds, cat=category, x=x, y=y, tpl=tpl, d=random.choice(WINDOWS),
+                grp=random.choice(GROUPS), sign=1, bf=int(category in ("fundamental", "analyst", "earnings")),
+                settings=dict(universe=universe, neutralization=NEUT_BY_CATEGORY.get(category, "INDUSTRY"),
+                              decay=random.choice([2, 4, 6]), truncation=0.08))
+
+
+def mutate(g, catalogs):
     g = copy.deepcopy(g)
-    for _ in range(random.choice([1, 1, 2])):
-        kind = random.choice(["part", "part", "param", "param", "weight", "group", "setting", "setting", "drop"])
-        slot = random.choice(["p1", "p2"]) if g["p2"] else "p1"
-        if kind == "part":
-            used = {g["p1"][0], (g["p2"] or [None])[0]}
-            new = random.choice([n for n in PARTS if n not in used])
-            params = {k: random.choice(v) for k, v in PARTS[new].items() if k != "expr"}
-            g[slot if g["p2"] or random.random() < 0.5 else "p2"] = [new, params]
-        elif kind == "param":
-            name, params = g[slot]
-            key = random.choice([k for k in PARTS[name] if k != "expr"])
-            params[key] = random.choice(PARTS[name][key])
-        elif kind == "weight" and g["p2"]:
-            g["w"] = random.choice(WEIGHTS)
-        elif kind == "group":
-            g["grp"] = random.choice(GROUPS)
-        elif kind == "drop" and g["p2"] and random.random() < 0.3:
-            g["p2"] = None
-        else:
-            key = random.choice(list(SETTING_CHOICES))
-            g["settings"][key] = random.choice(SETTING_CHOICES[key])
+    fields = catalogs[g["region"]][1].get(g["ds"], {}).get("fields", [])
+    kind = random.choice(["tpl", "d", "d", "grp", "sign", "bf", "field", "neut", "decay", "trunc", "universe"])
+    if kind == "tpl":
+        g["tpl"] = random.choice([t for t in TEMPLATES if t != "ratio" or len(fields) > 1])
+        if g["tpl"] == "ratio" and not g.get("y"):
+            g["y"] = pick_field([f for f in fields if f["id"] != g["x"]])
+    elif kind == "d":
+        g["d"] = random.choice(WINDOWS)
+    elif kind == "grp":
+        g["grp"] = random.choice(GROUPS)
+    elif kind == "sign":
+        g["sign"] = -g["sign"]
+    elif kind == "bf":
+        g["bf"] = 1 - g["bf"]
+    elif kind == "field" and fields:
+        g["x"] = pick_field(fields)
+    elif kind == "neut":
+        g["settings"]["neutralization"] = random.choice(NEUTRALIZATIONS)
+    elif kind == "decay":
+        g["settings"]["decay"] = random.choice(DECAYS)
+    elif kind == "trunc":
+        g["settings"]["truncation"] = random.choice(TRUNCATIONS)
+    elif kind == "universe":
+        g["settings"]["universe"] = random.choice(UNIVERSES.get(g["region"], ["TOP3000"]))
     return g
 
 
-def pair_of(g):
-    """The two parts an alpha combines, e.g. "oey+val"."""
-    return "+".join(sorted([g["p1"][0], (g["p2"] or ["-"])[0]]))
-
-
-# A pair is blocked once it is submitted, has a ready alpha, or keeps producing alphas
-# that are 0.9+ correlated with submitted ones: more of it can only fail self-correlation.
-ALREADY_SUBMITTED = ["oey+vr", "oey+val"]
-
+# ---------------------------------------------------------------- state & output
 
 def brain_day():
     return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
 
 def load_state():
+    state = {}
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE) as f:
             state = json.load(f)
-    else:
-        state = dict(tried=[], pool=[], bad_tokens=[], sims_by_day={}, ready=[])
-    state.setdefault("blocked", list(ALREADY_SUBMITTED))
-    state.setdefault("hot", {})
+    for key, default in dict(tried=[], pool=[], bad_tokens=[], sims_by_day={}, ready=[], blocked=[],
+                             hot={}, ready_by_ds={}, flips=[]).items():
+        state.setdefault(key, default)
     return state
 
 
@@ -201,25 +241,23 @@ def corr_ok(row):
     return row.get("self_corr") is None or row["self_corr"] < 0.7 or row.get("corr_check") == "PASS"
 
 
-def parent_score(entry):
-    row = entry["row"]
-    # Children of high-correlation alphas stay high-correlation, so discount those parents.
-    return (row["fitness"] or 0) * (1.0 if corr_ok(row) else 0.4)
+def field_key(g):
+    return f"{g['region']}:{g['x']}"
 
 
-def pick_parent(state):
-    pool = [e for e in state["pool"] if e["row"].get("fitness") is not None]
-    if not pool or random.random() < 0.3:
-        return random.choice(SEEDS)
-    pool.sort(key=parent_score, reverse=True)
-    return max(random.sample(pool[:20], min(4, len(pool[:20]))), key=parent_score)["genome"]
-
-
-def next_candidate(state, tried):
+def next_candidate(state, tried, catalogs, regions):
     bad = set(state["bad_tokens"])
     for _ in range(500):
-        g = mutate(pick_parent(state))
-        if pair_of(g) in state["blocked"]:
+        if state["flips"]:
+            g = state["flips"].pop(0)                       # strongly negative alphas, sign flipped
+        else:
+            pool = [e for e in state["pool"] if (e["row"].get("fitness") or 0) > 0.5]
+            if pool and random.random() < 0.6:
+                pool.sort(key=lambda e: e["row"]["fitness"] * (1 if corr_ok(e["row"]) else 0.4), reverse=True)
+                g = mutate(random.choice(pool[:25])["genome"], catalogs)
+            else:
+                g = new_atom(state, catalogs, regions)
+        if g["region"] not in regions or field_key(g) in state["blocked"]:
             continue
         code = build(g)
         fields, ops = count_fields_ops(code)
@@ -227,7 +265,7 @@ def next_candidate(state, tried):
             continue
         if bad and any(re.search(rf"\b{re.escape(t)}\b", code) for t in bad):
             continue
-        k = code + "|" + json.dumps(g["settings"], sort_keys=True)
+        k = g["region"] + "|" + code + "|" + json.dumps(g["settings"], sort_keys=True)
         if k not in tried:
             tried.add(k)
             return g, code, k
@@ -246,19 +284,34 @@ def full_check(brain, alpha_id):
     return False, ["CHECK_PENDING"]
 
 
+def analyze(brain, row):
+    """The slow part, run off the simulation slots: self-correlation and Check Submission."""
+    fit = row["fitness"] or 0
+    row["self_corr"] = brain.self_correlation(row["alpha_id"])
+    if (row["self_corr"] or 0) >= 0.7 and fit >= 2.0:
+        row["corr_check"] = brain.corr_check(row["alpha_id"])  # the 10% Sharpe rule
+    if not corr_ok(row):
+        return row, f"FAILS self-correlation {row['self_corr']}"
+    ok, bad = full_check(brain, row["alpha_id"])
+    if not ok:
+        return row, "FAILS " + " ".join(bad)
+    return row, "READY TO SUBMIT" if fit >= 2.0 else f"READY TO SUBMIT (backup: {row['rating']}, not Excellent)"
+
+
 def details(code, g, row, status):
     s = g["settings"]
     fields, ops = count_fields_ops(code)
     return (f"=== {status} | {row['rating'].upper()} fitness {row['fitness']} sharpe {row['sharpe']} "
-            f"turnover {row.get('turnover')}% self-corr {row.get('self_corr')} | {fields} fields, "
-            f"{row.get('op_count') or ops} operators\n{row['link']}\n"
-            f"Settings: USA | Delay 1 | {s['universe']} | Neutralization {s['neutralization'].title()} | "
+            f"turnover {row.get('turnover')}% self-corr {row.get('self_corr')} | dataset {g['ds']} "
+            f"({g['cat']}) | {fields} fields, {row.get('op_count') or ops} operators\n{row['link']}\n"
+            f"Settings: {g['region']} | Delay 1 | {s['universe']} | Neutralization {s['neutralization'].title()} | "
             f"Decay {s['decay']} | Truncation {s['truncation']} | Pasteurization On | "
             f"Unit Handling Verify | NaN Handling On | Test Period 1 year\n{code}\n")
 
 
 CSV_COLUMNS = ["time", "alpha_id", "link", "rating", "fitness", "sharpe", "turnover", "self_corr", "status",
-               "fields", "operators", "universe", "neutralization", "decay", "truncation", "code"]
+               "region", "dataset", "category", "fields", "operators", "universe", "neutralization", "decay",
+               "truncation", "code"]
 
 
 def record_csv(row, g, code, status):
@@ -271,30 +324,19 @@ def record_csv(row, g, code, status):
         s = g["settings"]
         w.writerow([datetime.now().strftime("%Y-%m-%d %H:%M"), row.get("alpha_id"), row.get("link"),
                     row.get("rating"), row.get("fitness"), row.get("sharpe"), row.get("turnover"),
-                    row.get("self_corr"), status, fields, row.get("op_count") or ops, s["universe"],
-                    s["neutralization"], s["decay"], s["truncation"], code])
+                    row.get("self_corr"), status, g["region"], g["ds"], g["cat"], fields,
+                    row.get("op_count") or ops, s["universe"], s["neutralization"], s["decay"],
+                    s["truncation"], code])
 
 
-def analyze(brain, row):
-    """The slow part, run off the simulation slots: self-correlation and Check Submission."""
-    fit = row["fitness"] or 0
-    row["self_corr"] = brain.self_correlation(row["alpha_id"])
-    if (row["self_corr"] or 0) >= 0.7 and fit >= 2.0:
-        row["corr_check"] = brain.corr_check(row["alpha_id"])  # the 10% Sharpe rule
-    if not corr_ok(row):
-        return row, f"FAILS self-correlation {row['self_corr']}"
-    ok, bad = full_check(brain, row["alpha_id"])
-    if not ok:
-        return row, "FAILS " + " ".join(bad)
-    if fit >= 2.0:
-        return row, "READY TO SUBMIT"
-    return row, f"READY TO SUBMIT (backup: {row['rating']}, not Excellent)"
-
+# ---------------------------------------------------------------- main loop
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--daily-sims", type=int, default=300, help="simulations to run today (default 300)")
+    ap.add_argument("--regions", default="USA", help="comma-separated regions, e.g. USA,GLB (default USA)")
     args = ap.parse_args()
+    regions = [r.strip().upper() for r in args.regions.split(",") if r.strip()]
 
     os.makedirs("results", exist_ok=True)
     state = load_state()
@@ -302,48 +344,52 @@ def main():
     email = os.environ.get("BRAIN_EMAIL") or input("BRAIN email: ")
     password = os.environ.get("BRAIN_PASSWORD") or getpass.getpass("BRAIN password: ")
     brain = Brain(email, password)
+    catalogs = {r: (UNIVERSES.get(r, ["TOP3000"])[0], load_catalog(brain, r, UNIVERSES.get(r, ["TOP3000"])[0]))
+                for r in regions}
 
     def sims_today():
         return state["sims_by_day"].get(brain_day(), 0)
 
     def finalize(g, code, row, status):
-        state["pool"].append(dict(genome=g, row={x: row.get(x) for x in
-                                                 ("fitness", "sharpe", "self_corr", "corr_check")}))
+        state["pool"].append(dict(genome=g, row={x: row.get(x) for x in ("fitness", "sharpe", "self_corr",
+                                                                        "corr_check")}))
         fit = row["fitness"] or 0
-        pair = pair_of(g)
-        if fit >= 1.5 and (row.get("self_corr") or 0) >= 0.9:
-            state["hot"][pair] = state["hot"].get(pair, 0) + 1
-        if (state["hot"].get(pair, 0) >= 2 or status.startswith("READY")) and pair not in state["blocked"]:
-            state["blocked"].append(pair)
-            log(f"  (no more {pair} alphas: {'one is ready' if status.startswith('READY') else 'too close to submitted alphas'})")
-        brain.tag(row["alpha_id"], f"auto_{row['rating'].upper().replace(' ', '_')}_{row['fitness']}",
-                  ["auto", row["rating"].lower().replace(" ", "_")])
+        key = field_key(g)
+        if fit >= 1.3 and (row.get("self_corr") or 0) >= 0.9:
+            state["hot"][key] = state["hot"].get(key, 0) + 1
+        ready = status.startswith("READY")
+        if ready:
+            state["ready_by_ds"][g["ds"]] = state["ready_by_ds"].get(g["ds"], 0) + 1
+        if (ready or state["hot"].get(key, 0) >= 2) and key not in state["blocked"]:
+            state["blocked"].append(key)   # one ready alpha per field; or the field is used up
+        brain.tag(row["alpha_id"], f"auto_{g['cat']}_{row['rating'].upper().replace(' ', '_')}_{row['fitness']}",
+                  ["auto", g["cat"], row["rating"].lower().replace(" ", "_")])
         record_csv(row, g, code, status)
-        log(f"  [{sims_today():>3}/{args.daily_sims}] {row['rating']:<13} fitness {row['fitness']}  "
-            f"sharpe {row['sharpe']}  self-corr {row.get('self_corr')}  {row['alpha_id']}  {status}")
+        log(f"  [{sims_today():>3}/{args.daily_sims}] {row['rating']:<13} fit {row['fitness']}  sharpe "
+            f"{row['sharpe']}  to {row.get('turnover')}%  corr {row.get('self_corr')}  {g['ds']:<14} "
+            f"{row['alpha_id']}  {status}")
         if fit >= 1.6:  # full code and settings for Good and better
             log(details(code, g, row, status), EXCELLENT_FILE)
-        if status.startswith("READY"):
-            state["ready"].append(dict(day=brain_day(), fitness=row["fitness"], text=details(code, g, row, status)))
+        if ready:
+            state["ready"].append(dict(day=brain_day(), fitness=row["fitness"], ds=g["ds"],
+                                       text=details(code, g, row, status)))
         save_state(state)
 
-    log(f"\n--- {datetime.now():%Y-%m-%d %H:%M} start, BRAIN day {brain_day()}, "
+    log(f"\n--- {datetime.now():%Y-%m-%d %H:%M} start, BRAIN day {brain_day()}, regions {','.join(regions)}, "
         f"{sims_today()}/{args.daily_sims} simulations done today ---")
     log(f"Running {MAX_CONCURRENT} simulations at a time (BRAIN's limit). Each takes 1-3 minutes.")
-    # Simulations hold BRAIN's 3 slots only while simulating; correlation and submission
-    # checks for promising alphas run separately, so a new simulation starts at once.
     sim_pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENT)  # no 'with': Control+C exits at once
     check_pool = ThreadPoolExecutor(max_workers=6)
-    sims, checks, checks_row = {}, {}, {}
+    sims, checks, check_rows = {}, {}, {}
     errors_in_a_row = 0
     try:
         while sims or checks or sims_today() + len(sims) < args.daily_sims:
             while len(sims) < MAX_CONCURRENT and sims_today() + len(sims) < args.daily_sims:
-                nxt = next_candidate(state, tried)
+                nxt = next_candidate(state, tried, catalogs, regions)
                 if nxt is None:
                     break
                 g, code, k = nxt
-                cand = dict(name="auto", code=code, **g["settings"])
+                cand = dict(name="auto", code=code, region=g["region"], **g["settings"])
                 sims[sim_pool.submit(brain.simulate, cand, False)] = (g, code, k)
             if not sims and not checks:
                 break
@@ -354,7 +400,7 @@ def main():
                     try:
                         row, status = fut.result()
                     except Exception as e:
-                        row, status = checks_row[fut], f"CHECK ERROR {type(e).__name__}"
+                        row, status = check_rows[fut], f"CHECK ERROR {type(e).__name__}"
                     finalize(g, code, row, status)
                     continue
                 g, code, k = sims.pop(fut)
@@ -374,17 +420,22 @@ def main():
                 errors_in_a_row = 0
                 state["tried"].append(k)
                 state["sims_by_day"][brain_day()] = sims_today() + 1
-                fit = row["fitness"] or 0
+                fit, sharpe = row["fitness"] or 0, row["sharpe"] or 0
+                if sharpe <= -1.0:   # the opposite bet is good: queue it with the sign flipped
+                    flipped = dict(copy.deepcopy(g), sign=-g["sign"])
+                    state["flips"].append(flipped)
                 if (row.get("op_count") or 0) > MAX_OPS:
                     finalize(g, code, row, f"NOT ALLOWED: {row['op_count']} operators")
-                elif fit < BACKUP_FITNESS or (row["sharpe"] or 0) < 1.25:
-                    finalize(g, code, row, "too weak to submit")
+                elif fit < BACKUP_FITNESS or sharpe < 1.25:
+                    finalize(g, code, row, "flipped sign queued" if sharpe <= -1.0 else "too weak to submit")
+                elif (row.get("turnover") or 0) > MAX_TURNOVER:
+                    finalize(g, code, row, f"turnover {row['turnover']}% (over {MAX_TURNOVER}%)")
                 elif row.get("failed_checks"):
                     finalize(g, code, row, "FAILS " + row["failed_checks"])
                 else:
                     cf = check_pool.submit(analyze, brain, row)
                     checks[cf] = (g, code)
-                    checks_row[cf] = row
+                    check_rows[cf] = row
             if errors_in_a_row >= 10:
                 log("  BRAIN keeps failing (gateway errors); pausing 5 minutes before trying again.")
                 time.sleep(300)
@@ -393,14 +444,19 @@ def main():
         log("Stopped by Control+C.")
     save_state(state)
 
-    ready = sorted((r for r in state["ready"] if r["day"] == brain_day()), key=lambda r: -r["fitness"])
+    today = sorted((r for r in state["ready"] if r["day"] == brain_day()), key=lambda r: -r["fitness"])
+    first, rest, seen = [], [], set()
+    for r in today:                       # best alpha from each dataset first
+        (rest if r["ds"] in seen else first).append(r)
+        seen.add(r["ds"])
     with open(READY_FILE, "w") as f:
-        f.write(f"{len(ready)} alphas passed every check today ({brain_day()}), best first. None submitted.\n"
-                "Submit the first, then click Check Submission on the next before submitting it:\n"
-                "once one is submitted, the others are compared with it too.\n\n"
-                + "\n".join(r["text"] for r in ready))
-    log(f"--- done: {sims_today()}/{args.daily_sims} simulations today, {len(ready)} ready to submit "
-        f"(see {READY_FILE}); every Good+ alpha is in {EXCELLENT_FILE}, every alpha in {CSV_FILE} ---")
+        f.write(f"{len(today)} alphas passed every check today ({brain_day()}). None submitted.\n"
+                "The first block has the best alpha from each dataset: submit from there first.\n"
+                "Click Check Submission before each one: once one is submitted, the others are compared with it.\n\n"
+                + "\n".join(r["text"] for r in first)
+                + ("\n--- more from the same datasets ---\n\n" + "\n".join(r["text"] for r in rest) if rest else ""))
+    log(f"--- done: {sims_today()}/{args.daily_sims} simulations today, {len(today)} ready to submit from "
+        f"{len(first)} datasets (see {READY_FILE}) ---")
 
 
 if __name__ == "__main__":
