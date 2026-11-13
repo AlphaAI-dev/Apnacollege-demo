@@ -349,6 +349,11 @@ CSV_COLUMNS = ["time", "alpha_id", "link", "rating", "fitness", "sharpe", "turno
 
 
 def record_csv(row, g, code, status):
+    if os.path.exists(CSV_FILE):
+        with open(CSV_FILE) as f:
+            header = f.readline().strip().split(",")
+        if header != CSV_COLUMNS:   # written by an older version: keep it, start a new file
+            os.replace(CSV_FILE, CSV_FILE.replace(".csv", "_old.csv"))
     new = not os.path.exists(CSV_FILE)
     fields, ops = count_fields_ops(code)
     with open(CSV_FILE, "a", newline="") as f:
