@@ -255,6 +255,25 @@ def field_key(g):
     return f"{g['region']}:{g['x']}"
 
 
+def allowed_templates(brain):
+    """Drop templates that use an operator your account can't use (BRAIN's operator list)."""
+    try:
+        r = brain.request("GET", f"{API}/operators")
+        data = r.json() if r.ok else []
+        names = {o.get("name") for o in (data if isinstance(data, list) else data.get("results", []))}
+    except Exception:
+        names = set()
+    if not names:
+        log("  Couldn't read your operator list; unknown operators will be dropped as BRAIN rejects them.")
+        return
+    for tpl in list(TEMPLATES):
+        used = set(re.findall(r"\b([a-z_][a-z0-9_]*)\s*\(", TEMPLATES[tpl])) | {"ts_backfill"}
+        missing = used - names
+        if missing:
+            log(f"  Not using the '{tpl}' idea: your account doesn't have {', '.join(sorted(missing))}.")
+            del TEMPLATES[tpl]
+
+
 def next_candidate(state, tried, catalogs, regions):
     bad = set(state["bad_tokens"])
     for _ in range(500):
@@ -354,6 +373,7 @@ def main():
     email = os.environ.get("BRAIN_EMAIL") or input("BRAIN email: ")
     password = os.environ.get("BRAIN_PASSWORD") or getpass.getpass("BRAIN password: ")
     brain = Brain(email, password)
+    allowed_templates(brain)
     catalogs = {r: (UNIVERSES.get(r, ["TOP3000"])[0], load_catalog(brain, r, UNIVERSES.get(r, ["TOP3000"])[0]))
                 for r in regions}
 
@@ -426,6 +446,8 @@ def main():
                     m = re.search(r'unknown (?:variable|operator) "(\w+)"', row["error"])
                     if m:
                         state["bad_tokens"].append(m.group(1))
+                        for tpl in [t for t in TEMPLATES if re.search(rf"\b{m.group(1)}\s*\(", TEMPLATES[t])]:
+                            del TEMPLATES[tpl]
                     continue
                 errors_in_a_row = 0
                 state["tried"].append(k)
