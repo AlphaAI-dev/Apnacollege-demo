@@ -14,8 +14,11 @@ Built around the guidance from WorldQuant's own sessions:
     conservatively: every function, every + - * / < > sign).
 
 The dataset and field list comes from BRAIN's data catalog for your account and
-is cached in results/ for a week. An alpha whose Sharpe comes out strongly
-negative is re-run with its sign flipped, since the opposite bet is then good.
+is cached in results/ for a week. Three automatic fixes save simulations: a
+strongly negative alpha is re-run with its sign flipped (the opposite bet is good);
+one that fails the sub-universe test is re-run on larger companies (TOP1000/TOP500),
+and a field that keeps failing it is dropped; one with real signal but turnover over
+25% is re-run averaged (ts_mean) with a little more decay.
 
 It runs 3 simulations at a time (BRAIN's limit) until today's target is met
 (default 300; BRAIN day in US Eastern). Nothing is submitted. Every alpha is
@@ -68,6 +71,8 @@ TEMPLATES = {
     "rank":  "group_rank(ts_rank({X}, {d}), {G})",
     "zscore": "group_rank(ts_zscore({X}, {d}), {G})",
     "change": "group_rank(ts_delta({X}, {d}), {G})",
+    # Averaging first: calms fast-moving data (news, social media) so turnover stays low.
+    "smooth": "group_rank(ts_mean({X}, {d}), {G})",
     # How far the stock is from its group's median over time (from the WorldQuant session).
     "resid": "group_rank(ts_regression({X}, group_median({X}, {G}), {d}), {G})",
     "ratio": "group_rank(ts_rank({X} / {Y}, {d}), {G})",
@@ -227,7 +232,7 @@ def load_state():
         with open(STATE_FILE) as f:
             state = json.load(f)
     for key, default in dict(tried=[], pool=[], bad_tokens=[], sims_by_day={}, ready=[], blocked=[],
-                             hot={}, ready_by_ds={}, flips=[]).items():
+                             hot={}, ready_by_ds={}, flips=[], subfail={}).items():
         state.setdefault(key, default)
     for key in ALREADY_SUBMITTED_FIELDS:
         if key not in state["blocked"]:
@@ -456,6 +461,24 @@ def main():
                 if sharpe <= -1.0:   # the opposite bet is good: queue it with the sign flipped
                     flipped = dict(copy.deepcopy(g), sign=-g["sign"])
                     state["flips"].append(flipped)
+                key, turnover = field_key(g), row.get("turnover") or 0
+                # Fix the two failures that waste the most simulations, once per alpha:
+                if "LOW_SUB_UNIVERSE_SHARPE" in (row.get("failed_checks") or "") and fit >= 1.3:
+                    # The signal lives in small stocks: try a larger-company universe instead,
+                    # and stop repeating the idea after a few of these.
+                    state["subfail"][key] = state["subfail"].get(key, 0) + 1
+                    smaller = {"TOP3000": "TOP1000", "TOP1000": "TOP500"}.get(g["settings"]["universe"])
+                    if smaller:
+                        fixed = copy.deepcopy(g)
+                        fixed["settings"]["universe"] = smaller
+                        state["flips"].append(fixed)
+                    if state["subfail"][key] >= 3 and key not in state["blocked"]:
+                        state["blocked"].append(key)
+                if turnover > MAX_TURNOVER and sharpe >= 0.8 and g["tpl"] != "smooth":
+                    # Real signal but trades too much: average it first and decay a little more.
+                    fixed = dict(copy.deepcopy(g), tpl="smooth", d=20)
+                    fixed["settings"]["decay"] = 8
+                    state["flips"].append(fixed)
                 if (row.get("op_count") or 0) > MAX_OPS:
                     finalize(g, code, row, f"NOT ALLOWED: {row['op_count']} operators")
                 elif fit < BACKUP_FITNESS or sharpe < 1.25:
