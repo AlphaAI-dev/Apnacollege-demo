@@ -26,9 +26,14 @@ named/tagged on BRAIN, written to results/all_alphas.csv, Good+ ones go to
 results/excellent_alphas.txt, and results/ready_to_submit.txt lists the ones that
 passed BRAIN's Check Submission, best first, one per dataset at the top.
 
+Whenever an alpha that passes from a dataset not picked yet today is found, it is
+printed straight away as a PICK; at the end, TODAY'S PICKS lists the best one per
+dataset (IDs in results/submitted.txt are left out).
+
 Usage:
-    python3 brain_auto.py                         # USA, 300 simulations today
+    python3 brain_auto.py                         # USA, 300 simulations today, 3 picks
     python3 brain_auto.py --daily-sims 500 --regions USA,GLB
+    python3 brain_auto.py --until-picks           # stop as soon as 3 picks are found
 Stop any time with Control+C; a rerun the same day continues towards the target.
 """
 import argparse
@@ -374,6 +379,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--daily-sims", type=int, default=300, help="simulations to run today (default 300)")
     ap.add_argument("--regions", default="USA", help="comma-separated regions, e.g. USA,GLB (default USA)")
+    ap.add_argument("--picks", type=int, default=3,
+                    help="how many submittable alphas from different datasets to pick (default 3)")
+    ap.add_argument("--until-picks", action="store_true",
+                    help="stop as soon as the picks are found, instead of running all of --daily-sims")
     args = ap.parse_args()
     regions = [r.strip().upper() for r in args.regions.split(",") if r.strip()]
 
@@ -389,6 +398,27 @@ def main():
 
     def sims_today():
         return state["sims_by_day"].get(brain_day(), 0)
+
+    def submitted_ids():
+        path = "results/submitted.txt"
+        return {line.strip() for line in open(path) if line.strip()} if os.path.exists(path) else set()
+
+    def todays_picks():
+        """Best ready alpha per dataset today (lowest self-correlation, then fitness), not yet submitted."""
+        best = {}
+        for r in state["ready"]:
+            if r["day"] != brain_day() or r.get("id") in submitted_ids():
+                continue
+            score = ((r.get("corr") if r.get("corr") is not None else 1), -r["fitness"])
+            if r["ds"] not in best or score < best[r["ds"]][0]:
+                best[r["ds"]] = (score, r)
+        return [r for _, r in sorted(best.values(), key=lambda x: x[0])]
+
+    def picks_done():
+        return args.until_picks and len(todays_picks()) >= args.picks
+
+    def target_left():
+        return not picks_done() and sims_today() + len(sims) < args.daily_sims
 
     def finalize(g, code, row, status):
         state["pool"].append(dict(genome=g, row={x: row.get(x) for x in ("fitness", "sharpe", "self_corr",
@@ -411,8 +441,12 @@ def main():
         if fit >= 1.6:  # full code and settings for Good and better
             log(details(code, g, row, status), EXCELLENT_FILE)
         if ready:
-            state["ready"].append(dict(day=brain_day(), fitness=row["fitness"], ds=g["ds"],
-                                       text=details(code, g, row, status)))
+            new_dataset = g["ds"] not in {r["ds"] for r in todays_picks()}
+            state["ready"].append(dict(day=brain_day(), fitness=row["fitness"], ds=g["ds"], id=row["alpha_id"],
+                                       corr=row.get("self_corr"), text=details(code, g, row, status)))
+            if new_dataset:
+                log(f"\n*** PICK {len(todays_picks())}/{args.picks}: a submittable alpha from a new dataset "
+                    f"({g['ds']}) ***\n" + details(code, g, row, status))
         save_state(state)
 
     log(f"\n--- {datetime.now():%Y-%m-%d %H:%M} start, BRAIN day {brain_day()}, regions {','.join(regions)}, "
@@ -423,8 +457,8 @@ def main():
     sims, checks, check_rows = {}, {}, {}
     errors_in_a_row = 0
     try:
-        while sims or checks or sims_today() + len(sims) < args.daily_sims:
-            while len(sims) < MAX_CONCURRENT and sims_today() + len(sims) < args.daily_sims:
+        while (sims or checks or target_left()) and not picks_done():
+            while len(sims) < MAX_CONCURRENT and target_left():
                 nxt = next_candidate(state, tried, catalogs, regions)
                 if nxt is None:
                     break
@@ -515,6 +549,14 @@ def main():
                 "Click Check Submission before each one: once one is submitted, the others are compared with it.\n\n"
                 + "\n".join(r["text"] for r in first)
                 + ("\n--- more from the same datasets ---\n\n" + "\n".join(r["text"] for r in rest) if rest else ""))
+    picks = todays_picks()[:args.picks]
+    if picks:
+        log(f"\n=== TODAY'S PICKS: {len(picks)} submittable alphas from {len(picks)} different datasets ===\n"
+            "Submit them in this order. Click Check Submission before each one (once one is submitted,\n"
+            "the next is compared with it too), then add its ID to results/submitted.txt.\n\n"
+            + "\n".join(r["text"] for r in picks))
+    else:
+        log("\nNo submittable alpha yet today. Run again to keep searching.")
     log(f"--- done: {sims_today()}/{args.daily_sims} simulations today, {len(today)} ready to submit from "
         f"{len(first)} datasets (see {READY_FILE}) ---")
 
