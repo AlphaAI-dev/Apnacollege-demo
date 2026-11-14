@@ -58,6 +58,7 @@ EXCELLENT_FILE = "results/excellent_alphas.txt"
 READY_FILE = "results/ready_to_submit.txt"
 MAX_FIELDS, MAX_OPS = 4, 8
 BACKUP_FITNESS = 1.3   # BRAIN's own minimums are fitness 1.0 and Sharpe 1.25
+SWEET_CORR = 0.6       # self-correlation below this is the target; 0.6-0.7 only as a fallback
 MAX_TURNOVER = 25      # percent; the session's advice for production alphas
 
 UNIVERSES = {"USA": ["TOP3000", "TOP1000", "TOP500", "TOP200"], "GLB": ["TOP3000", "MINVOL1M"]}
@@ -292,7 +293,8 @@ def next_candidate(state, tried, catalogs, regions):
         else:
             pool = [e for e in state["pool"] if (e["row"].get("fitness") or 0) > 0.5]
             if pool and random.random() < 0.6:
-                pool.sort(key=lambda e: e["row"]["fitness"] * (1 if corr_ok(e["row"]) else 0.4), reverse=True)
+                pool.sort(key=lambda e: e["row"]["fitness"] * (1.3 if (e["row"].get("self_corr") or 1) < SWEET_CORR
+                                                               else 1 if corr_ok(e["row"]) else 0.4), reverse=True)
                 g = mutate(random.choice(pool[:25])["genome"], catalogs)
             else:
                 g = new_atom(state, catalogs, regions)
@@ -334,7 +336,9 @@ def analyze(brain, row):
     ok, bad = full_check(brain, row["alpha_id"])
     if not ok:
         return row, "FAILS " + " ".join(bad)
-    return row, "READY TO SUBMIT" if fit >= 2.0 else f"READY TO SUBMIT (backup: {row['rating']}, not Excellent)"
+    zone = "corr under 0.6" if (row["self_corr"] or 0) < SWEET_CORR else (
+        "passes by the 10% Sharpe rule" if (row["self_corr"] or 0) >= 0.7 else "corr 0.6-0.7, fallback")
+    return row, f"READY TO SUBMIT ({zone}; {row['rating']})"
 
 
 def details(code, g, row, status):
@@ -409,13 +413,14 @@ def main():
         for r in state["ready"]:
             if r["day"] != brain_day() or r.get("id") in submitted_ids():
                 continue
-            score = ((r.get("corr") if r.get("corr") is not None else 1), -r["fitness"])
+            score = ((r.get("corr") if r.get("corr") is not None else 1) >= SWEET_CORR, -r["fitness"])
             if r["ds"] not in best or score < best[r["ds"]][0]:
                 best[r["ds"]] = (score, r)
         return [r for _, r in sorted(best.values(), key=lambda x: x[0])]
 
     def picks_done():
-        return args.until_picks and len(todays_picks()) >= args.picks
+        sweet = [r for r in todays_picks() if (r.get("corr") if r.get("corr") is not None else 1) < SWEET_CORR]
+        return args.until_picks and len(sweet) >= args.picks
 
     def target_left():
         return not picks_done() and sims_today() + len(sims) < args.daily_sims
