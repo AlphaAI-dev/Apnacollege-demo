@@ -176,7 +176,11 @@ def new_atom(state, catalogs, regions):
     universe, catalog = catalogs[region]
     # Datasets with fewer ready alphas so far get more turns: more pyramids, more diversity.
     ds_ids = list(catalog)
-    weights = [1 / (1 + state["ready_by_ds"].get(ds, 0)) for ds in ds_ids]
+    def ds_weight(ds):
+        n, total = state["ds_stats"].get(ds, [0, 0.0])
+        quality = 1.0 if n < 10 else 0.15 + max(0.0, total / n)   # mean Sharpe after 10 tries
+        return quality / (1 + state["ready_by_ds"].get(ds, 0))
+    weights = [ds_weight(ds) for ds in ds_ids]
     ds = random.choices(ds_ids, weights=weights)[0]
     fields = catalog[ds]["fields"]
     tpl = random.choice(list(TEMPLATES)) if len(fields) > 1 else random.choice(
@@ -186,7 +190,8 @@ def new_atom(state, catalogs, regions):
     category = catalog[ds]["category"]
     return dict(region=region, ds=ds, cat=category, x=x, y=y, tpl=tpl, d=random.choice(WINDOWS),
                 grp=random.choice(GROUPS), sign=1, bf=int(category in ("fundamental", "analyst", "earnings")),
-                settings=dict(universe=universe, neutralization=NEUT_BY_CATEGORY.get(category, "INDUSTRY"),
+                settings=dict(universe="TOP1000" if region == "USA" else universe,
+                              neutralization=NEUT_BY_CATEGORY.get(category, "INDUSTRY"),
                               decay=random.choice([2, 4, 6]), truncation=0.08))
 
 
@@ -238,7 +243,7 @@ def load_state():
         with open(STATE_FILE) as f:
             state = json.load(f)
     for key, default in dict(tried=[], pool=[], bad_tokens=[], sims_by_day={}, ready=[], blocked=[],
-                             hot={}, ready_by_ds={}, flips=[], subfail={}).items():
+                             hot={}, ready_by_ds={}, flips=[], subfail={}, ds_stats={}).items():
         state.setdefault(key, default)
     for key in ALREADY_SUBMITTED_FIELDS:
         if key not in state["blocked"]:
@@ -502,6 +507,8 @@ def main():
                 state["tried"].append(k)
                 state["sims_by_day"][brain_day()] = sims_today() + 1
                 fit, sharpe = row["fitness"] or 0, row["sharpe"] or 0
+                n, total = state["ds_stats"].get(g["ds"], [0, 0.0])
+                state["ds_stats"][g["ds"]] = [n + 1, total + abs(sharpe)]   # |Sharpe|: a flip can use it
                 if sharpe <= -1.0:   # the opposite bet is good: queue it with the sign flipped
                     flipped = dict(copy.deepcopy(g), sign=-g["sign"])
                     state["flips"].append(flipped)
