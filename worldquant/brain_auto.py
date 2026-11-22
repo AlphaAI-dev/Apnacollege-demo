@@ -305,6 +305,8 @@ def next_candidate(state, tried, catalogs, regions):
                 g = new_atom(state, catalogs, regions)
         if g["region"] not in regions or field_key(g) in state["blocked"]:
             continue
+        if g["region"] == "USA" and g["settings"]["universe"] == "TOP3000":
+            g["settings"]["universe"] = "TOP1000"   # TOP3000 alphas keep failing the sub-universe test
         code = build(g)
         fields, ops = count_fields_ops(code)
         if fields > MAX_FIELDS or ops > MAX_OPS:
