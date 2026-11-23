@@ -82,6 +82,8 @@ TEMPLATES = {
     # How far the stock is from its group's median over time (from the WorldQuant session).
     "resid": "group_rank(ts_regression({X}, group_median({X}, {G}), {d}), {G})",
     "ratio": "group_rank(ts_rank({X} / {Y}, {d}), {G})",
+    # Two signals from the same dataset added: stronger, still a single-dataset alpha.
+    "pair": "group_rank(ts_rank({X}, {d}), {G}) + group_rank(ts_rank({Y}, {d}), {G})",
     # Remove the part explained by company size.
     "vecneut": "vector_neut(group_rank(ts_rank({X}, {d}), {G}), rank(cap))",
     # Only trade the more volatile stocks (entry condition), hold otherwise.
@@ -184,9 +186,9 @@ def new_atom(state, catalogs, regions):
     ds = random.choices(ds_ids, weights=weights)[0]
     fields = catalog[ds]["fields"]
     tpl = random.choice(list(TEMPLATES)) if len(fields) > 1 else random.choice(
-        [t for t in TEMPLATES if t != "ratio"])
+        [t for t in TEMPLATES if t not in ("ratio", "pair")])
     x = pick_field(fields)
-    y = pick_field([f for f in fields if f["id"] != x]) if tpl == "ratio" else None
+    y = pick_field([f for f in fields if f["id"] != x]) if tpl in ("ratio", "pair") else None
     category = catalog[ds]["category"]
     return dict(region=region, ds=ds, cat=category, x=x, y=y, tpl=tpl, d=random.choice(WINDOWS),
                 grp=random.choice(GROUPS), sign=1, bf=int(category in ("fundamental", "analyst", "earnings")),
@@ -200,8 +202,8 @@ def mutate(g, catalogs):
     fields = catalogs[g["region"]][1].get(g["ds"], {}).get("fields", [])
     kind = random.choice(["tpl", "d", "d", "grp", "sign", "bf", "field", "neut", "decay", "trunc", "universe"])
     if kind == "tpl":
-        g["tpl"] = random.choice([t for t in TEMPLATES if t != "ratio" or len(fields) > 1])
-        if g["tpl"] == "ratio" and not g.get("y"):
+        g["tpl"] = random.choice([t for t in TEMPLATES if t not in ("ratio", "pair") or len(fields) > 1])
+        if g["tpl"] in ("ratio", "pair") and not g.get("y"):
             g["y"] = pick_field([f for f in fields if f["id"] != g["x"]])
     elif kind == "d":
         g["d"] = random.choice(WINDOWS)
@@ -231,6 +233,19 @@ def mutate(g, catalogs):
 # the WorldQuant session said lowers an alpha's value, and raises production correlation.
 ALREADY_SUBMITTED_FIELDS = ["USA:operating_income", "USA:cashflow_op", "USA:liabilities",
                             "USA:enterprise_value", "USA:assets"]
+
+
+# Fields that scored Sharpe 1.6-1.7 here but failed the sub-universe test: re-tried
+# as single-dataset pairs and size-neutralized, which spreads the bet across company sizes.
+KNOWN_SIGNAL_SEEDS = [
+    dict(key="s1", ds="fundamental6", tpl="pair", x="fnd6_esopnr", y="fnd6_mfma2_revt", d=20),
+    dict(key="s2", ds="fundamental6", tpl="pair", x="fnd6_esopr", y="fnd6_dcvsub", d=20),
+    dict(key="s3", ds="fundamental6", tpl="pair", x="fnd6_newa1v1300_ap", y="fnd6_mfma2_revt", d=20),
+    dict(key="s4", ds="fundamental6", tpl="sizeneut", x="fnd6_esopnr", y=None, d=126),
+    dict(key="s5", ds="fundamental6", tpl="sizeneut", x="fnd6_mfma2_revt", y=None, d=20),
+    dict(key="s6", ds="fundamental6", tpl="sizeneut", x="fnd6_newa1v1300_ap", y=None, d=20),
+    dict(key="s7", ds="pv13", tpl="zscore", x="pv13_revere_country", y=None, d=63),
+]
 
 
 def brain_day():
@@ -409,6 +424,14 @@ def main():
     def sims_today():
         return state["sims_by_day"].get(brain_day(), 0)
 
+    for seed in KNOWN_SIGNAL_SEEDS:
+        if "USA" in regions and seed["ds"] in catalogs["USA"][1] and not state.get("seeded", {}).get(seed["key"]):
+            g = dict(region="USA", cat=catalogs["USA"][1][seed["ds"]]["category"], sign=1, bf=0, grp="industry",
+                     settings=dict(universe="TOP3000", neutralization="INDUSTRY", decay=4, truncation=0.05),
+                     **{k: v for k, v in seed.items() if k != "key"})
+            state["flips"].append(g)
+            state.setdefault("seeded", {})[seed["key"]] = True
+
     def submitted_ids():
         path = "results/submitted.txt"
         return {line.strip() for line in open(path) if line.strip()} if os.path.exists(path) else set()
@@ -524,6 +547,8 @@ def main():
                         fixed = copy.deepcopy(g)
                         fixed["settings"]["universe"] = smaller
                         state["flips"].append(fixed)
+                    if g["tpl"] != "sizeneut" and "sizeneut" in TEMPLATES:
+                        state["flips"].append(dict(copy.deepcopy(g), tpl="sizeneut"))  # spread across sizes
                     if state["subfail"][key] >= 3 and key not in state["blocked"]:
                         state["blocked"].append(key)
                 if turnover > MAX_TURNOVER and sharpe >= 0.8 and g["tpl"] != "smooth":
