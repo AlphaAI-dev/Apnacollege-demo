@@ -178,7 +178,7 @@ def new_atom(state, catalogs, regions):
     ds_ids = list(catalog)
     def ds_weight(ds):
         n, total = state["ds_stats"].get(ds, [0, 0.0])
-        quality = 1.0 if n < 10 else 0.15 + max(0.0, total / n)   # mean Sharpe after 10 tries
+        quality = 1.0 if n < 10 else max(0.02, total / n) ** 2    # mean |Sharpe| after 10 tries, squared
         return quality / (1 + state["ready_by_ds"].get(ds, 0))
     weights = [ds_weight(ds) for ds in ds_ids]
     ds = random.choices(ds_ids, weights=weights)[0]
@@ -190,7 +190,7 @@ def new_atom(state, catalogs, regions):
     category = catalog[ds]["category"]
     return dict(region=region, ds=ds, cat=category, x=x, y=y, tpl=tpl, d=random.choice(WINDOWS),
                 grp=random.choice(GROUPS), sign=1, bf=int(category in ("fundamental", "analyst", "earnings")),
-                settings=dict(universe="TOP1000" if region == "USA" else universe,
+                settings=dict(universe=universe,
                               neutralization=NEUT_BY_CATEGORY.get(category, "INDUSTRY"),
                               decay=random.choice([2, 4, 6]), truncation=0.08))
 
@@ -297,7 +297,8 @@ def next_candidate(state, tried, catalogs, regions):
             g = state["flips"].pop(0)                       # strongly negative alphas, sign flipped
         else:
             pool = [e for e in state["pool"] if (e["row"].get("fitness") or 0) > 0.5]
-            if pool and random.random() < 0.6:
+            strong = any((e["row"].get("fitness") or 0) >= 1.0 for e in pool)
+            if pool and random.random() < (0.8 if strong else 0.5):
                 pool.sort(key=lambda e: e["row"]["fitness"] * (1.3 if (e["row"].get("self_corr") or 1) < SWEET_CORR
                                                                else 1 if corr_ok(e["row"]) else 0.4), reverse=True)
                 g = mutate(random.choice(pool[:25])["genome"], catalogs)
@@ -305,8 +306,6 @@ def next_candidate(state, tried, catalogs, regions):
                 g = new_atom(state, catalogs, regions)
         if g["region"] not in regions or field_key(g) in state["blocked"]:
             continue
-        if g["region"] == "USA" and g["settings"]["universe"] == "TOP3000":
-            g["settings"]["universe"] = "TOP1000"   # TOP3000 alphas keep failing the sub-universe test
         code = build(g)
         fields, ops = count_fields_ops(code)
         if fields > MAX_FIELDS or ops > MAX_OPS:
