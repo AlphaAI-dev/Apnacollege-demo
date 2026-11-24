@@ -235,7 +235,7 @@ ALREADY_SUBMITTED_FIELDS = ["USA:operating_income", "USA:cashflow_op", "USA:liab
                             "USA:enterprise_value", "USA:assets",
                             # fundamental6: strong only in small caps, always fail the sub-universe test
                             "USA:fnd6_esopnr", "USA:fnd6_esopr", "USA:fnd6_mfma2_revt", "USA:fnd6_dcvsub",
-                            "USA:fnd6_newa1v1300_ap", "USA:fnd6_newa1v1300_caps", "USA:fnd6_mfma2_oancf"]
+                            "USA:fnd6_newa1v1300_ap"]
 
 
 # Fields that scored Sharpe 1.6-1.7 here but failed the sub-universe test: re-tried
