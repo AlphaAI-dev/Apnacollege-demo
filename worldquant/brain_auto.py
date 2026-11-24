@@ -232,18 +232,15 @@ def mutate(g, catalogs):
 # 78LpvnO5, ...). Reusing them only makes "the same expression as an addition", which
 # the WorldQuant session said lowers an alpha's value, and raises production correlation.
 ALREADY_SUBMITTED_FIELDS = ["USA:operating_income", "USA:cashflow_op", "USA:liabilities",
-                            "USA:enterprise_value", "USA:assets"]
+                            "USA:enterprise_value", "USA:assets",
+                            # fundamental6: strong only in small caps, always fail the sub-universe test
+                            "USA:fnd6_esopnr", "USA:fnd6_esopr", "USA:fnd6_mfma2_revt", "USA:fnd6_dcvsub",
+                            "USA:fnd6_newa1v1300_ap", "USA:fnd6_newa1v1300_caps", "USA:fnd6_mfma2_oancf"]
 
 
 # Fields that scored Sharpe 1.6-1.7 here but failed the sub-universe test: re-tried
 # as single-dataset pairs and size-neutralized, which spreads the bet across company sizes.
 KNOWN_SIGNAL_SEEDS = [
-    dict(key="s1", ds="fundamental6", tpl="pair", x="fnd6_esopnr", y="fnd6_mfma2_revt", d=20),
-    dict(key="s2", ds="fundamental6", tpl="pair", x="fnd6_esopr", y="fnd6_dcvsub", d=20),
-    dict(key="s3", ds="fundamental6", tpl="pair", x="fnd6_newa1v1300_ap", y="fnd6_mfma2_revt", d=20),
-    dict(key="s4", ds="fundamental6", tpl="sizeneut", x="fnd6_esopnr", y=None, d=126),
-    dict(key="s5", ds="fundamental6", tpl="sizeneut", x="fnd6_mfma2_revt", y=None, d=20),
-    dict(key="s6", ds="fundamental6", tpl="sizeneut", x="fnd6_newa1v1300_ap", y=None, d=20),
     dict(key="s7", ds="pv13", tpl="zscore", x="pv13_revere_country", y=None, d=63),
 ]
 
@@ -510,6 +507,16 @@ def main():
                     except Exception as e:
                         row, status = check_rows[fut], f"CHECK ERROR {type(e).__name__}"
                     finalize(g, code, row, status)
+                    # Strong but too close to a submitted alpha: re-shape it (new operator, long
+                    # window, other neutralization) so its returns differ, once per alpha.
+                    if (row.get("self_corr") or 0) >= 0.7 and (row.get("fitness") or 0) >= 1.3 \
+                            and not g.get("decor") and not status.startswith("READY"):
+                        for tpl, d, neut in (("zscore", 252, "SUBINDUSTRY"), ("change", 126, "MARKET"),
+                                             ("smooth", 252, "SECTOR")):
+                            if tpl in TEMPLATES and tpl != g["tpl"]:
+                                v = dict(copy.deepcopy(g), tpl=tpl, d=d, decor=True)
+                                v["settings"]["neutralization"] = neut
+                                state["flips"].append(v)
                     continue
                 g, code, k = sims.pop(fut)
                 try:
